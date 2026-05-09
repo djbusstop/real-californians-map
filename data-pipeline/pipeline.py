@@ -490,17 +490,21 @@ def fetch_tracts_geojson() -> dict:
     return geojson
 
 
-def parse_marginal_specs(sub: dict) -> list[tuple[str, float]]:
-    """Return [(variable, weight), ...] from a cohort YAML record.
-    Supports both `tract_marginal: VAR` (single, weight 1.0) and
-    `tract_marginals: [{var: VAR, weight: W}, ...]` (multi)."""
+def parse_marginal_specs(sub: dict) -> list[str]:
+    """Return [variable, ...] from a cohort YAML record.
+    Supports flat list `tract_marginals: [VAR, ...]`, single `tract_marginal: VAR`,
+    and the legacy weighted form `tract_marginals: [{var, weight}, ...]` (weights
+    ignored — coefficients are fit from data via NNLS+Ridge regression)."""
     if "tract_marginals" in sub and sub["tract_marginals"]:
-        return [
-            (m["var"], float(m.get("weight", 1.0)))
-            for m in sub["tract_marginals"]
-        ]
+        out = []
+        for m in sub["tract_marginals"]:
+            if isinstance(m, str):
+                out.append(m)
+            elif isinstance(m, dict) and "var" in m:
+                out.append(m["var"])
+        return out
     if "tract_marginal" in sub and sub["tract_marginal"]:
-        return [(sub["tract_marginal"], 1.0)]
+        return [sub["tract_marginal"]]
     return []
 
 
@@ -547,80 +551,338 @@ def _phase1_share_blend(
     return out
 
 
+def _fit_ridge_nnls(X_train, y_train, lam: float):
+    """Ridge regression with non-negativity constraint on coefficients.
+
+    Solves min ||y - Xβ||² + λ||β||² s.t. β ≥ 0 by augmenting the design matrix:
+      X_aug = [X; √λ · I],   y_aug = [y; 0]
+    and running NNLS (Lawson & Hanson 1974) on the augmented system.
+    """
+    import warnings
+    import numpy as np
+    from scipy.optimize import nnls
+
+    n_f = X_train.shape[1]
+    sqrt_lam = np.sqrt(max(lam, 0.0))
+    X_aug = np.vstack([X_train, sqrt_lam * np.eye(n_f)])
+    y_aug = np.concatenate([y_train, np.zeros(n_f)])
+    # scipy's nnls computes a final residual norm via matmul that can trip
+    # numpy overflow/invalid warnings on near-singular leave-one-out splits;
+    # the returned coefficients are still correct, so silence the noise.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            try:
+                coefs, _ = nnls(X_aug, y_aug, maxiter=5000)
+            except Exception:
+                return None
+    return coefs
+
+
+def _compute_vifs(Xz):
+    """Variance Inflation Factors for each column of standardized design matrix Xz.
+    VIF_j = 1 / (1 - R²_j) where R²_j is the R² from regressing column j on the rest.
+    VIF > 10 conventionally indicates problematic multicollinearity (Belsley et al. 1980).
+    """
+    import numpy as np
+
+    n_features = Xz.shape[1]
+    vifs = []
+    for j in range(n_features):
+        X_others = np.delete(Xz, j, axis=1)
+        if X_others.shape[1] == 0:
+            vifs.append(1.0)
+            continue
+        try:
+            beta_j, *_ = np.linalg.lstsq(X_others, Xz[:, j], rcond=None)
+            x_pred = X_others @ beta_j
+            ss_res = float(np.sum((Xz[:, j] - x_pred) ** 2))
+            ss_tot = float(np.sum(Xz[:, j] ** 2))  # already mean-zero
+            r2_j = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+            vifs.append(float(1.0 / (1.0 - r2_j)) if r2_j < 0.9999 else float("inf"))
+        except Exception:
+            vifs.append(float("nan"))
+    return vifs
+
+
 def fit_area_level_model(
     puma_scores: dict[str, float],
     puma_pop: dict[str, float],
     puma_marginals: list[dict[str, float]],
     marginal_names: list[str],
+    spatial_weights: dict[str, list[str]] | None = None,
 ) -> dict | None:
-    """Phase 2: fit OLS PUMA_score(p) = β_pop·pop(p) + Σ β_k · M_k(p) + ε.
+    """Fit area-level synthetic SAE model (Fay-Herriot family) with NNLS+Ridge.
 
-    Returns coefficients and fit stats, or None if there isn't enough data
-    or the fit fails. Intercept is absorbed into the pop term so predictions
-    scale naturally to tract size.
+    Model: y(p) = mean(y) + Σ_k β_k · z_k(p) + ε(p),
+    where z_k(p) is column k of the design matrix (population + each marginal)
+    standardized to mean 0, std 1 across PUMAs, and β_k ≥ 0.
+
+    - Standardization (z-score) puts all predictors on a common scale so the
+      ridge L2 penalty applies uniformly (ESL §3.4).
+    - Non-negative coefficients (Lawson & Hanson 1974) prevent nonsensical
+      "more X predicts less Y" results when both are counts.
+    - Ridge regularization (Hoerl & Kennard 1970) handles multicollinearity
+      without zero-truncating correlated predictors as plain OLS via SVD does.
+    - λ selected per cohort by leave-one-PUMA-out cross-validation.
+
+    Returns model dict with coefficients, standardization params, and
+    diagnostics (R², LOOCV R², residual std, VIF per predictor, condition
+    number, optional Moran's I on residuals if spatial_weights given).
     """
     import numpy as np
 
-    pumas = sorted(set(puma_scores) & set(puma_pop))
-    if len(pumas) < 8:
+    pumas_aligned = sorted(set(puma_scores) & set(puma_pop))
+    if len(pumas_aligned) < 8:
         return None
 
     rows = []
     targets = []
-    for p in pumas:
+    keep_pumas = []
+    for p in pumas_aligned:
         pop_p = puma_pop[p]
         if pop_p <= 0:
             continue
         row = [pop_p] + [m.get(p, 0.0) for m in puma_marginals]
         rows.append(row)
         targets.append(puma_scores[p])
+        keep_pumas.append(p)
 
     if len(rows) < 8:
         return None
 
     X = np.asarray(rows, dtype=float)
     y = np.asarray(targets, dtype=float)
-    try:
-        coefs, *_ = np.linalg.lstsq(X, y, rcond=None)
-    except np.linalg.LinAlgError:
+    n_features = X.shape[1]
+    feature_names = ["population"] + list(marginal_names)
+
+    # Standardize predictors (z-score). Skip features with zero variance.
+    X_means = X.mean(axis=0)
+    X_stds = X.std(axis=0, ddof=0)
+    valid = X_stds > 0
+    Xz = np.zeros_like(X)
+    Xz[:, valid] = (X[:, valid] - X_means[valid]) / X_stds[valid]
+
+    y_mean = float(y.mean())
+    y_centered = y - y_mean
+
+    # Cross-validate ridge λ by leave-one-PUMA-out.
+    # Log-spaced grid covers regimes from near-OLS (λ≈0) to heavy shrinkage.
+    lam_grid = [0.0, 0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0]
+    n_obs = Xz.shape[0]
+    cv_scores: dict[float, float] = {}
+    best_lam = 0.0
+    best_loocv = -float("inf")
+
+    for lam in lam_grid:
+        loo_preds = np.zeros(n_obs)
+        for i in range(n_obs):
+            mask = np.ones(n_obs, dtype=bool)
+            mask[i] = False
+            coefs_i = _fit_ridge_nnls(Xz[mask], y_centered[mask], lam)
+            if coefs_i is None:
+                loo_preds[i] = y_mean
+            else:
+                loo_preds[i] = float(Xz[i] @ coefs_i + y_mean)
+        ss_res_loo = float(np.sum((y - loo_preds) ** 2))
+        ss_tot = float(np.sum((y - y_mean) ** 2))
+        loocv_r2 = 1 - ss_res_loo / ss_tot if ss_tot > 0 else 0.0
+        cv_scores[lam] = loocv_r2
+        if loocv_r2 > best_loocv:
+            best_loocv = loocv_r2
+            best_lam = lam
+
+    # Final fit on all PUMAs at best λ.
+    coefs = _fit_ridge_nnls(Xz, y_centered, best_lam)
+    if coefs is None:
         return None
 
-    preds = X @ coefs
+    preds = Xz @ coefs + y_mean
     residuals = y - preds
     ss_res = float(np.sum(residuals ** 2))
-    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    ss_tot = float(np.sum(y_centered ** 2))
     r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
+    # Diagnostics.
+    vifs = _compute_vifs(Xz)
+    try:
+        # Compute on the valid (non-zero-variance) columns only; zero columns
+        # would make cond infinite by construction.
+        Xz_valid = Xz[:, valid] if valid.any() else Xz
+        cond_number = float(np.linalg.cond(Xz_valid))
+    except Exception:
+        cond_number = float("nan")
+
+    moran_i: float | None = None
+    moran_z: float | None = None
+    moran_p: float | None = None
+    if spatial_weights is not None:
+        moran_i, moran_z, moran_p = compute_morans_i(
+            residuals.tolist(), keep_pumas, spatial_weights
+        )
+
     return {
-        "n_pumas": len(rows),
-        "pop_coef": float(coefs[0]),
-        "marginal_coefs": [float(c) for c in coefs[1:]],
-        "marginal_names": marginal_names,
+        "method": "ridge_nnls",
+        "n_pumas": int(n_obs),
+        "lambda": float(best_lam),
+        "lambda_cv_grid": {f"{k:g}": float(v) for k, v in cv_scores.items()},
+        "feature_names": feature_names,
+        "coefs": [float(c) for c in coefs],
+        "feature_means": [float(m) for m in X_means],
+        "feature_stds": [float(s) for s in X_stds],
+        "y_mean": float(y_mean),
         "r_squared": float(r_squared),
-        "residual_std": float(np.std(residuals)),
+        "loocv_r_squared": float(best_loocv),
+        "residual_std": float(np.std(residuals, ddof=1)),
+        "vif": [float(v) for v in vifs],
+        "condition_number": cond_number,
+        "morans_i_residual": moran_i,
+        "morans_i_z_score": moran_z,
+        "morans_i_p_value": moran_p,
     }
+
+
+def build_puma_queen_neighbors(puma_shp_dir: Path) -> dict[str, list[str]]:
+    """Build queen-contiguity neighbor lists for CA PUMAs.
+
+    Two PUMAs are queen-contiguous if their polygons share any boundary point.
+    Returns {puma_id: [neighbor_id, ...]}. Used for Moran's I diagnostics.
+
+    PUMA ids are normalized to the 5-char PUMA code (matching the keys used
+    elsewhere in the pipeline; the shapefile's GEOID20 is "ssppppp" so we
+    strip the state prefix).
+    """
+    import geopandas as gpd
+
+    shp_files = list(puma_shp_dir.rglob("*.shp"))
+    if not shp_files:
+        return {}
+    gdf = gpd.read_file(shp_files[0])
+    id_col = None
+    for c in ["PUMACE20", "PUMACE", "PUMA20", "PUMA", "GEOID20", "GEOID"]:
+        if c in gdf.columns:
+            id_col = c
+            break
+    if id_col is None:
+        return {}
+
+    def normalize(raw: str) -> str:
+        s = str(raw)
+        # GEOID is "ssppppp" (state + puma); strip CA's "06" prefix so we
+        # land on the 5-char PUMA code that puma_scores uses.
+        if id_col in ("GEOID20", "GEOID") and len(s) == 7 and s.startswith("06"):
+            return s[2:]
+        return s.zfill(5) if s.isdigit() and len(s) <= 5 else s
+
+    gdf = gdf.copy()
+    gdf["__pid"] = gdf[id_col].map(normalize)
+    gdf = gdf.set_index("__pid")
+    sindex = gdf.sindex
+
+    neighbors: dict[str, list[str]] = {}
+    for pid_i, geom_i in zip(gdf.index, gdf.geometry):
+        candidates = list(sindex.intersection(geom_i.bounds))
+        ngh: list[str] = []
+        for c_idx in candidates:
+            pid_j = gdf.index[c_idx]
+            if pid_j == pid_i:
+                continue
+            geom_j = gdf.geometry.iloc[c_idx]
+            if geom_i.touches(geom_j) or geom_i.intersects(geom_j):
+                ngh.append(str(pid_j))
+        neighbors[str(pid_i)] = ngh
+    return neighbors
+
+
+def compute_morans_i(
+    residuals: list[float],
+    ids: list[str],
+    neighbors: dict[str, list[str]],
+):
+    """Global Moran's I on residuals with binary queen-contiguity weights.
+
+    Returns (I, z_score, p_value). Inference uses the normal-approximation
+    variance (Cliff & Ord 1981); for binary symmetric W with PUMAs at this
+    sample size (n≈280), it's a reasonable approximation. Two-sided p-value.
+
+    A statistically significant Moran's I (|z| > 1.96, p < 0.05) on residuals
+    indicates the linear model is missing geographic structure — a quantitative
+    geographer's first diagnostic for a spatial regression.
+    """
+    import numpy as np
+    from math import erfc, sqrt
+
+    n = len(residuals)
+    if n < 4:
+        return None, None, None
+    e = np.asarray(residuals, dtype=float)
+    e_dev = e - e.mean()
+    denom = float(np.sum(e_dev ** 2))
+    if denom <= 0:
+        return None, None, None
+
+    # Build dense binary symmetric weight matrix.
+    id_to_idx = {id_: i for i, id_ in enumerate(ids)}
+    W = np.zeros((n, n), dtype=float)
+    for id_i, ngh in neighbors.items():
+        i = id_to_idx.get(id_i)
+        if i is None:
+            continue
+        for id_j in ngh:
+            j = id_to_idx.get(id_j)
+            if j is None or j == i:
+                continue
+            W[i, j] = 1.0
+    # Symmetrize defensively (queen contiguity is symmetric, but data may not be).
+    W = np.maximum(W, W.T)
+
+    s0 = float(W.sum())
+    if s0 == 0:
+        return None, None, None
+
+    numerator = float(e_dev @ W @ e_dev)
+    morans_i = (n / s0) * (numerator / denom)
+    exp_i = -1.0 / (n - 1)
+
+    # Variance under the normality assumption.
+    s1 = 0.5 * float(np.sum((W + W.T) ** 2))
+    row_sum = W.sum(axis=1)
+    col_sum = W.sum(axis=0)
+    s2 = float(np.sum((row_sum + col_sum) ** 2))
+    var_normal = (
+        (n * n * s1 - n * s2 + 3 * s0 * s0) / ((n * n - 1) * s0 * s0)
+    ) - exp_i * exp_i
+    if var_normal <= 0:
+        return float(morans_i), None, None
+
+    z = (morans_i - exp_i) / sqrt(var_normal)
+    # Two-sided p-value via complementary error function.
+    p = float(erfc(abs(z) / sqrt(2)))
+    return float(morans_i), float(z), p
 
 
 def distribute_to_tracts(
     puma_scores: dict,
     tract_marginals_by_cohort: dict[str, list[dict[str, float]]],
-    cohort_marginal_weights: dict[str, list[float]],
     cohort_marginal_names: dict[str, list[str]],
     tract_to_puma: dict,
     tract_pop: dict[str, float],
+    spatial_weights: dict[str, list[str]] | None = None,
 ) -> tuple[dict, dict]:
-    """Distribute PUMA-level cohort scores to tracts.
+    """Distribute PUMA-level cohort scores to tracts via area-level SAE.
 
-    Phase 2 (preferred): fit OLS per cohort, predict tract counts, rake within
-    each PUMA to preserve the source PUMA total.
+    Primary path: NNLS+Ridge regression with z-standardized predictors and
+    leave-one-PUMA-out CV for λ. Tract-level predictions are then raked
+    (proportionally rescaled) within each PUMA so the within-PUMA total
+    matches the PUMS-derived PUMA score (benchmarking constraint).
 
-    Phase 1 (fallback when the regression doesn't fit): weighted convex
-    combination of normalized marginal shares, raked the same way.
+    Fallback (when no marginals declared, fewer than 8 PUMAs, or LOOCV R²
+    below threshold): equal-weight share-blend across the available marginals,
+    or uniform within-PUMA distribution if no marginals are usable.
 
     Returns (tract_scores, model_summaries):
       tract_scores: { tract_geoid: { sub_id: score } }
-      model_summaries: { sub_id: { method: "regression"|"share-blend",
-                                   pop_coef, marginal_coefs, r_squared, ... } }
+      model_summaries: { sub_id: full diagnostics dict }
     """
     from collections import defaultdict
 
@@ -641,9 +903,12 @@ def distribute_to_tracts(
     out: dict[str, dict[str, float]] = {}
     summaries: dict[str, dict] = {}
 
-    for sub_id in sub_ids:
+    # LOOCV R² threshold to accept the regression. Negative LOOCV means the
+    # model generalizes worse than the mean — we fall back to share-blend.
+    LOOCV_THRESHOLD = 0.05
+
+    for sub_id in sorted(sub_ids):
         marginals_list = tract_marginals_by_cohort.get(sub_id, [])
-        weights = cohort_marginal_weights.get(sub_id, [])
         names = cohort_marginal_names.get(sub_id, [])
         # PUMA-aggregated marginals (sum across tracts in each PUMA).
         puma_marginals: list[dict[str, float]] = []
@@ -656,35 +921,48 @@ def distribute_to_tracts(
                 agg[puma] += val
             puma_marginals.append(dict(agg))
 
-        cohort_puma_scores = {p: vals.get(sub_id, 0.0) for p, vals in puma_scores.items()}
+        cohort_puma_scores = {
+            p: vals.get(sub_id, 0.0) for p, vals in puma_scores.items()
+        }
 
-        # ── Try Phase 2 (regression) ──
+        # ── Try regression ──
         model = None
         if marginals_list:
+            print(f"[fit] {sub_id}: ridge+NNLS with LOOCV...")
             model = fit_area_level_model(
-                cohort_puma_scores, puma_pop, puma_marginals, names
+                cohort_puma_scores,
+                puma_pop,
+                puma_marginals,
+                names,
+                spatial_weights=spatial_weights,
             )
 
-        used_method = "share-blend"  # default fallback
-        if model and model["r_squared"] >= 0.05:
-            used_method = "regression"
+        if model and model.get("loocv_r_squared", -1) >= LOOCV_THRESHOLD:
+            # Predict tract-level raw counts, then rake within each PUMA.
+            feature_means = model["feature_means"]
+            feature_stds = model["feature_stds"]
+            coefs = model["coefs"]
+            y_mean = model["y_mean"]
 
-        if used_method == "regression":
-            # Predict tract-level raw counts using fitted coefficients,
-            # then rake within each PUMA so sums match the PUMA score.
+            def predict(t: str) -> float:
+                # Build standardized feature vector: [pop, M_1, ..., M_K]
+                raw_features = [tract_pop.get(t, 0.0)] + [
+                    marg.get(t, 0.0) for marg in marginals_list
+                ]
+                z_pred = y_mean
+                for k, x_k in enumerate(raw_features):
+                    s = feature_stds[k]
+                    if s > 0:
+                        z_pred += coefs[k] * (x_k - feature_means[k]) / s
+                return max(z_pred, 0.0)
+
             for puma, tract_geoids in tracts_by_puma.items():
                 puma_score = cohort_puma_scores.get(puma, 0.0)
                 if puma_score == 0:
                     continue
-                raw: dict[str, float] = {}
-                for t in tract_geoids:
-                    pred = model["pop_coef"] * tract_pop.get(t, 0.0)
-                    for i, marg in enumerate(marginals_list):
-                        pred += model["marginal_coefs"][i] * marg.get(t, 0.0)
-                    raw[t] = max(pred, 0.0)
+                raw = {t: predict(t) for t in tract_geoids}
                 raw_sum = sum(raw.values())
                 if raw_sum <= 0:
-                    # Model predicted nothing for this PUMA's tracts; uniform.
                     share = 1.0 / len(tract_geoids) if tract_geoids else 0
                     for t in tract_geoids:
                         out.setdefault(t, {})[sub_id] = round(puma_score * share, 2)
@@ -693,41 +971,47 @@ def distribute_to_tracts(
                     for t in tract_geoids:
                         if raw[t] > 0:
                             out.setdefault(t, {})[sub_id] = round(raw[t] * factor, 2)
-            summaries[sub_id] = {"method": "regression", **model}
+            summaries[sub_id] = model
         else:
-            # Phase 1: weighted share-blend per PUMA.
-            # If no marginals are usable, distribute uniformly within each PUMA.
-            blend_weights = weights if weights else []
+            # Fallback: equal-weight share-blend, or uniform if no marginals.
+            n_marg = len(marginals_list)
+            equal_weights = [1.0] * n_marg
             for puma, tract_geoids in tracts_by_puma.items():
                 puma_score = cohort_puma_scores.get(puma, 0.0)
                 if puma_score == 0:
                     continue
-                if not blend_weights or not marginals_list:
-                    # No usable marginals — uniform fallback.
+                if n_marg == 0:
                     share = 1.0 / len(tract_geoids) if tract_geoids else 0
                     blended = {t: round(puma_score * share, 2) for t in tract_geoids}
                 else:
                     marginals_per_tract: dict[str, list[float]] = {}
                     for t in tract_geoids:
-                        marginals_per_tract[t] = [marg.get(t, 0.0) for marg in marginals_list]
+                        marginals_per_tract[t] = [
+                            marg.get(t, 0.0) for marg in marginals_list
+                        ]
                     blended = _phase1_share_blend(
-                        puma_score, tract_geoids, marginals_per_tract, blend_weights
+                        puma_score, tract_geoids, marginals_per_tract, equal_weights
                     )
                 for t, v in blended.items():
                     if v > 0:
                         out.setdefault(t, {})[sub_id] = v
+            if model:
+                fallback_reason = (
+                    f"loocv_r_squared={model.get('loocv_r_squared'):.3f} below "
+                    f"threshold {LOOCV_THRESHOLD}"
+                )
+            elif not marginals_list:
+                fallback_reason = "no marginals declared"
+            else:
+                fallback_reason = (
+                    "regression failed (insufficient PUMAs or singular matrix)"
+                )
             summaries[sub_id] = {
                 "method": "share-blend",
-                "n_marginals": len(marginals_list),
+                "n_marginals": n_marg,
                 "marginal_names": names,
-                "marginal_weights": weights,
-                "fallback_reason": (
-                    "no marginals declared"
-                    if not marginals_list
-                    else f"regression r_squared={model.get('r_squared'):.3f} below threshold"
-                    if model
-                    else "regression failed (insufficient PUMAs or singular matrix)"
-                ),
+                "fallback_reason": fallback_reason,
+                "rejected_model": model,  # preserved for transparency if regression ran
             }
 
     return out, summaries
@@ -907,37 +1191,41 @@ def main() -> None:
 
     # For each cohort, pull every declared tract marginal.
     tract_marginals_by_cohort: dict[str, list[dict[str, float]]] = {}
-    cohort_marginal_weights: dict[str, list[float]] = {}
     cohort_marginal_names: dict[str, list[str]] = {}
     for sub in subcultures:
         specs = parse_marginal_specs(sub)
         if not specs:
             print(f"[tract] {sub['id']}: no tract marginals declared; will fall back to uniform")
             tract_marginals_by_cohort[sub["id"]] = []
-            cohort_marginal_weights[sub["id"]] = []
             cohort_marginal_names[sub["id"]] = []
             continue
         margs: list[dict[str, float]] = []
         names: list[str] = []
-        weights: list[float] = []
-        for var, w in specs:
+        for var in specs:
             try:
                 margs.append(fetch_acs_tract_marginal(var))
                 names.append(var)
-                weights.append(w)
             except Exception as e:
                 print(f"[tract] {sub['id']}: failed to fetch {var} ({e}); skipping this marginal")
         tract_marginals_by_cohort[sub["id"]] = margs
-        cohort_marginal_weights[sub["id"]] = weights
         cohort_marginal_names[sub["id"]] = names
+
+    # Build PUMA queen-contiguity spatial weights for Moran's I diagnostics.
+    print("[tract] building PUMA spatial weights (queen contiguity)...")
+    try:
+        spatial_weights = build_puma_queen_neighbors(CACHE / "puma_shp")
+        print(f"[tract] spatial weights: {len(spatial_weights)} PUMAs")
+    except Exception as e:
+        print(f"[warn] spatial weights failed ({e}); Moran's I will be unavailable")
+        spatial_weights = None
 
     tract_scores, model_summaries = distribute_to_tracts(
         puma_scores,
         tract_marginals_by_cohort,
-        cohort_marginal_weights,
         cohort_marginal_names,
         tract_to_puma,
         tract_pop,
+        spatial_weights=spatial_weights,
     )
     out_tract_scores = DATA / "tract_scores.json"
     out_tract_scores.write_text(json.dumps(tract_scores))
@@ -947,14 +1235,27 @@ def main() -> None:
     out_models.write_text(json.dumps(model_summaries, indent=2))
     print(f"[save] {out_models}")
     for sub_id, summary in model_summaries.items():
-        if summary["method"] == "regression":
+        method = summary.get("method", "unknown")
+        if method == "ridge_nnls":
+            morans = summary.get("morans_i_residual")
+            morans_str = f" Moran_I={morans:+.3f}" if morans is not None else ""
+            cond = summary.get("condition_number")
+            cond_str = f" cond={cond:.1f}" if cond is not None else ""
+            max_vif = max(
+                (v for v in summary.get("vif", []) if v != float("inf")),
+                default=float("nan"),
+            )
             print(
-                f"[model] {sub_id:25s} OLS  R²={summary['r_squared']:.3f} "
-                f"n={summary['n_pumas']} pop_coef={summary['pop_coef']:+.4f} "
-                f"marg_coefs={[round(c, 4) for c in summary['marginal_coefs']]}"
+                f"[model] {sub_id:25s} ridge_nnls "
+                f"R²={summary['r_squared']:.3f} "
+                f"LOOCV_R²={summary['loocv_r_squared']:+.3f} "
+                f"λ={summary['lambda']:g} max_VIF={max_vif:.1f}{cond_str}{morans_str}"
             )
         else:
-            print(f"[model] {sub_id:25s} share-blend ({summary.get('fallback_reason', '')})")
+            print(
+                f"[model] {sub_id:25s} share-blend "
+                f"({summary.get('fallback_reason', '')})"
+            )
 
     fetch_tracts_geojson()
 

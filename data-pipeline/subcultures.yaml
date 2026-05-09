@@ -16,11 +16,19 @@ subcultures:
   - id: queer_leftist
     name: Queer leftist
     vibe: takes the bus to therapy. hates capitalism but isn't bad at it
-    # Multi-marginal: regression layer estimates per-marginal coefficients.
+    # Marginals are inputs to NNLS+Ridge regression (see METHODOLOGY.md).
+    # Coefficients are fit from data; this list is just the candidate covariates.
+    # Note: B11009 (same-sex households) is suppressed at tract level in
+    # 2023 ACS 5-Year, so we use B11001_006E (nonfamily households) as the
+    # tract-level proxy for queer-coded household geography. The trait vector
+    # still hard-gates on SAME_SEX = 1 at the PUMS person-record level.
+    # B25024 unit-size buckets span apartment-building geography from small
+    # triplex to high-rise; ridge picks weights from data.
     tract_marginals:
-      - { var: B11009_004E, weight: 1 }   # female same-sex unmarried-partner households
-      - { var: B11009_002E, weight: 1 }   # male same-sex unmarried-partner households
-      - { var: B25024_009E, weight: 0.5 } # housing units in 50+ unit structures (urban density signal)
+      - B11001_006E   # nonfamily households (single adults, roommates, unmarried partners)
+      - B25024_005E   # 3-4 unit apartment buildings (small)
+      - B25024_006E   # 5-9 unit apartment buildings (mid)
+      - B25024_009E   # 50+ unit apartment buildings (high-rise)
     vector:
       # ───── Hard gates ─────
       - { field: AGEP, op: range, value: [18, 40], weight: 1.5, required: true }
@@ -96,9 +104,15 @@ subcultures:
   - id: married_gays
     name: Married gays
     vibe: literally any gay married couple. that's the whole thing.
+    # B11009 (same-sex households) is suppressed at tract level in 2023
+    # ACS 5-Year. Using nonfamily-household + apartment proxies; the
+    # SAME_SEX = 1 hard gate at PUMS level still concentrates the cohort
+    # in queer-coded PUMAs.
     tract_marginals:
-      - { var: B11009_002E, weight: 1 }   # male same-sex unmarried-partner households
-      - { var: B11009_004E, weight: 1 }   # female same-sex unmarried-partner households
+      - B11001_006E   # nonfamily households
+      - B25024_005E   # 3-4 unit apartment buildings (small)
+      - B25024_006E   # 5-9 unit apartment buildings (mid)
+      - B25024_009E   # 50+ unit apartment buildings (high-rise)
     vector:
       - { field: SAME_SEX, op: eq, value: 1, weight: 2, required: true }                                # same-sex household
       - { field: MAR, op: eq, value: 1, weight: 2, required: true }                                     # married
@@ -112,9 +126,9 @@ subcultures:
     name: Crumbl cookie couple
     vibe: newlywed homeowners with a peace lily, a Tesla, and a Bachelor in Paradise watch-party tradition
     tract_marginals:
-      - { var: B11003_002E, weight: 1 }   # married-couple family households
-      - { var: B25024_002E, weight: 0.5 } # 1-unit detached structures (suburban housing)
-      - { var: B19001_016E, weight: 0.5 } # households earning $150k–$200k (their income band)
+      - B11003_002E   # married-couple family households
+      - B25024_002E   # 1-unit detached structures (suburban housing)
+      - B19001_016E   # households earning $150k-$200k (their income band)
     vector:
       # Hard gates
       - { field: AGEP, op: range, value: [24, 38], weight: 2, required: true }
@@ -159,13 +173,16 @@ subcultures:
   - id: bilingual_baddie
     name: Bilingual baddies
     vibe: she's bilingual, she has to work, and she's fine with it DAMN
+    # B16001 (detailed language) is suppressed at tract level in 2023 ACS
+    # 5-Year. Switched to C16001 (collapsed language table) which publishes
+    # cleanly. Note: Punjabi and Armenian roll into C16001_015E "Other
+    # Indo-European" alongside Persian, Hindi, Greek; we lose specificity.
     tract_marginals:
-      - { var: B03002_012E, weight: 1 }   # total Hispanic / Latino population (catches assimilated second-gen too)
-      - { var: B16001_003E, weight: 1 }   # speak Spanish at home
-      - { var: B16001_099E, weight: 0.5 } # Tagalog / Filipino (daly city, vallejo, west covina, san diego)
-      - { var: B16001_087E, weight: 0.5 } # Vietnamese (westminster, garden grove, east san jose)
-      - { var: B16001_054E, weight: 0.5 } # Punjabi (central valley, yuba city, fresno)
-      - { var: B16001_039E, weight: 0.5 } # Armenian (glendale, burbank)
+      - B03002_012E   # total Hispanic / Latino population
+      - C16001_003E   # Spanish at home
+      - C16001_027E   # Tagalog at home (daly city, vallejo, west covina, san diego)
+      - C16001_024E   # Vietnamese at home (westminster, garden grove, east san jose)
+      - C16001_015E   # Other Indo-European at home (rolls Punjabi, Armenian, Hindi, Persian)
     vector:
       # Hard gates
       - { field: SEX,  op: eq, value: 2, weight: 1.5, required: true }                                  # female
@@ -203,9 +220,9 @@ subcultures:
     name: Winos
     vibe: their oldest is in college, the wine fridge is full, the dog is large, the SUV is paid off
     tract_marginals:
-      - { var: B25075_022E, weight: 1 }   # owner-occupied homes valued $1M–$1.5M (wine-country mid-tier)
-      - { var: B25024_002E, weight: 0.5 } # 1-unit detached structures (they own a real house)
-      - { var: B19001_017E, weight: 0.5 } # households earning $200k+ (comfortable enough to do it up)
+      - B25075_022E   # owner-occupied homes valued $1M-$1.5M (wine-country mid-tier)
+      - B25024_002E   # 1-unit detached structures (they own a real house)
+      - B19001_017E   # households earning $200k+ (comfortable enough to do it up)
     vector:
       # Hard gates
       - { field: AGEP, op: range, value: [50, 75], weight: 2, required: true }                          # boomer-ish age
@@ -250,8 +267,8 @@ subcultures:
     name: Toothless hill people
     vibe: acid-dropping libertarian racists with more guns than teeth
     tract_marginals:
-      - { var: B25024_010E, weight: 1 }   # mobile home unit count (rural marginal-housing signal)
-      - { var: B22002_002E, weight: 0.5 } # households receiving SNAP/food stamps (rural poverty signal)
+      - B25024_010E   # mobile home unit count (rural marginal-housing signal)
+      - B22002_002E   # households receiving SNAP/food stamps (rural poverty signal)
     vector:
       # Hard gates
       - { field: AGEP, op: gte, value: 25, weight: 1, required: true }                                  # adult (excludes kids)
@@ -309,9 +326,9 @@ subcultures:
     name: Stupid guys
     vibe: this guy doesn't even know how stupid he is. he's going nowhere.
     tract_marginals:
-      - { var: B25024_010E, weight: 1 }   # mobile home unit count (rural marginal-housing signal)
-      - { var: B22002_002E, weight: 0.5 } # households receiving SNAP/food stamps
-      - { var: B01001_002E, weight: 0.5 } # male population (mild gender weighting)
+      - B25024_010E   # mobile home unit count (rural marginal-housing signal)
+      - B22002_002E   # households receiving SNAP/food stamps
+      - B01001_002E   # male population (mild gender weighting)
     vector:
       # Hard gates (all required)
       - { field: SEX, op: eq, value: 1, weight: 1.5, required: true }                              # male
