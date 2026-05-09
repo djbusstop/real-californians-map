@@ -275,3 +275,62 @@ subcultures:
       directly (no dental data in census), and doesn't distinguish "hill people" from any rural
       poor cohort — for that we'd want geographic gating, which we deliberately avoid.
 
+  - id: redneck
+    name: Gun-owning rednecks
+    vibe: drives a Ram, owns a flag, has a gun safe, votes how he votes
+    tract_marginals:
+      - B25024_002E   # 1-unit detached structures (rural housing)
+      - B25024_010E   # mobile homes (rural housing alternative)
+      - B21001_002E   # male veterans (gun-ownership correlate)
+    vector:
+      # Hard gates
+      - { field: SEX, op: eq, value: 1, weight: 1.5, required: true }                                  # male
+      - { field: AGEP, op: range, value: [25, 65], weight: 1.5, required: true }                       # working age
+      - { field: SCHL, op: lte, value: 20, weight: 1.5, required: true }                               # less than bachelor's
+      - { field: ESR, op: in, value: [1, 2], weight: 1.5, required: true }                             # employed (distinguishes from hill_people)
+
+      # Rural housing (mobile home OR acreage OR detached SFH)
+      - { field: ACR, op: gte, value: 2, weight: 2 }                                                   # 1+ acres
+      - { field: ACR, op: eq, value: 3, weight: 1 }                                                    # 10+ acres extra
+      - { field: BLD, op: eq, value: 1, weight: 2 }                                                    # mobile home
+      - { field: BLD, op: eq, value: 2, weight: 1.5 }                                                  # 1-unit detached
+      - { field: HFL, op: in, value: [2, 4, 6], weight: 1.5 }                                          # propane / oil / wood heat
+      - { field: TEN, op: in, value: [1, 2], weight: 1 }                                               # owns home
+
+      # Veteran status (strongest available gun-ownership proxy)
+      - { field: MIL, op: in, value: [1, 2], weight: 2 }                                               # active or past active duty
+      - { field: MIL, op: eq, value: 2, weight: 0.5 }                                                  # past active extra
+
+      # Truck-and-family lifestyle
+      - { field: VEH, op: gte, value: 2, weight: 1.5 }                                                 # multiple vehicles
+      - { field: VEH, op: gte, value: 3, weight: 0.5 }                                                 # 3+ vehicles extra
+      - { field: HUPAOC, op: in, value: [1, 2, 3], weight: 1 }                                         # has own children present
+
+      # Marriage flavor (married/divorced, not never-married)
+      - { field: MAR, op: eq, value: 1, weight: 1.5 }                                                  # married
+      - { field: MAR, op: eq, value: 3, weight: 0.5 }                                                  # divorced
+      - { field: HHT, op: eq, value: 1, weight: 1 }                                                    # married-couple household
+
+      # Working-class male occupations
+      - { field: OCCP, op: occupation_soc_major, value: [45, 47, 49, 51, 53, 55], weight: 1.5 }
+        # 45 farming/forestry/fishing, 47 construction/extraction, 49 install/maintenance, 51 production, 53 transport, 55 military
+      - { field: OCCP, op: occupation_soc_major, value: [47, 53], weight: 1 }
+        # construction and transportation extra boost (most redneck-coded subset)
+      - { field: INDP, op: industry_naics, value: [11], weight: 1 }                                    # agriculture industry
+      - { field: COW, op: in, value: [1, 6, 7], weight: 0.5 }                                          # private wage or self-employed
+      - { field: WKHP, op: gte, value: 35, weight: 0.5 }                                               # full-time
+
+      # Identity flavor
+      - { field: NATIVITY, op: eq, value: 1, weight: 0.5 }                                             # US-born helps
+    proxy_gap: |
+      Census doesn't track gun ownership directly. Veteran status is the strongest available
+      proxy (Pew estimates veterans own guns at roughly twice the rate of non-veterans). Rural
+      housing (mobile home or acreage), working-class male occupations, and married-with-kids
+      structure together describe the demographic shape of the archetype. Politics, religious
+      affiliation, hunting/fishing licenses, and cultural details (truck loyalty, flag display)
+      are not measurable in census data. Demographically overlaps with hill_people but is
+      structurally distinct: hill_people is retired/disabled/marginal-poor; redneck is employed
+      working-class. The veteran marginal will pull dot placement modestly toward areas with
+      military bases (San Diego, Travis, Twentynine Palms) in addition to the rural-redneck
+      target geography (far north, eastern Sierra, Central Valley periphery, high desert).
+

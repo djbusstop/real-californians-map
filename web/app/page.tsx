@@ -23,6 +23,7 @@ const SUBCULTURES: Subculture[] = [
   { id: "bilingual_baddie", name: "Bilingual baddies", vibe: "she's bilingual, she has to work, and she's fine with it DAMN" },
   { id: "crumbl_cookie_couple", name: "Crumbl cookie couple", vibe: "newlywed homeowners with a peace lily, a Tesla, and a Bachelor in Paradise watch-party tradition" },
   { id: "hill_people", name: "Toothless hill people", vibe: "acid-dropping libertarian racists with more guns than teeth" },
+  { id: "redneck", name: "Gun-owning rednecks", vibe: "drives a Ram, owns a flag, has a gun safe, votes how he votes" },
 ];
 
 export default function Home() {
