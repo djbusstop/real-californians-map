@@ -132,6 +132,7 @@ export default function Home() {
           geojson={pumaGeo ?? EMPTY_FC}
           scores={scores ?? {}}
           selectedIds={selected}
+          isMobile={isMobile}
         />
         {isMobile && selected.length > 0 && (
           <div
