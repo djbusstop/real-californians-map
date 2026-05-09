@@ -1,16 +1,7 @@
 "use client";
 
 import type { Scores, Subculture } from "@/app/page";
-
-const COLORS: Record<string, string> = {
-  queer_leftist: "#2563eb",
-  married_gays: "#d946ef",
-  bilingual_baddie: "#f97316",
-  crumbl_cookie_couple: "#ec4899",
-  wino: "#722f37",
-  hill_people: "#355E3B",
-  stupid_guy: "#8b6f47",
-};
+import { COLORS } from "@/lib/colors";
 
 interface Props {
   subcultures: Subculture[];

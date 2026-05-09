@@ -5,6 +5,7 @@ import maplibregl, { Map as MlMap } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { Scores } from "@/app/page";
 import { buildDotLayer } from "@/utils/dotgen";
+import { COLORS, FALLBACK_COLOR } from "@/lib/colors";
 
 interface Props {
   geojson: GeoJSON.FeatureCollection;
@@ -23,17 +24,6 @@ const DOTS_PER_UNIT = 100;
 
 const BASEMAP_STYLE = "https://tiles.openfreemap.org/styles/positron";
 
-const COLORS: Record<string, string> = {
-  queer_leftist: "#2563eb",
-  married_gays: "#d946ef",
-  bilingual_baddie: "#f97316",
-  crumbl_cookie_couple: "#ec4899",
-  wino: "#722f37",
-  hill_people: "#355E3B",
-  stupid_guy: "#8b6f47",
-};
-
-const FALLBACK_COLOR = "#3567d8";
 
 // Build a "match" expression mapping subculture id to color, for use as
 // circle-color in a single layer that holds dots from all selected subcultures.

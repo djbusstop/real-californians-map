@@ -15,7 +15,7 @@ subcultures:
 
   - id: queer_leftist
     name: Queer leftist
-    vibe: 18-40, BA+, has a laptop, recently moved, urban-coded, partnered, no kids, fancy occupation, tends to take transit or work from home
+    vibe: takes the bus to therapy. hates capitalism but isn't bad at it
     tract_marginal: B11009_004E   # female same-sex unmarried-partner households per tract
     vector:
       # ───── Hard gates ─────
@@ -91,7 +91,7 @@ subcultures:
 
   - id: married_gays
     name: Married gays
-    vibe: married, same-sex, of any description
+    vibe: literally any gay married couple. that's the whole thing.
     tract_marginal: B11009_002E   # male same-sex unmarried-partner households per tract (gay-coded geography)
     vector:
       - { field: SAME_SEX, op: eq, value: 1, weight: 2, required: true }                                # same-sex household
@@ -104,7 +104,7 @@ subcultures:
 
   - id: crumbl_cookie_couple
     name: Crumbl cookie couple
-    vibe: just a normal married couple, new homeowners, two cars, Taylor Swift and golf, boring in a comforting way
+    vibe: newlywed homeowners with a peace lily, a Tesla, and a Bachelor in Paradise watch-party tradition
     tract_marginal: B11003_002E   # married-couple family households per tract (broader than detached-only, distributes dots more evenly)
     vector:
       # Hard gates
@@ -186,7 +186,7 @@ subcultures:
 
   - id: wino
     name: Winos
-    vibe: 50-75, owns a place on some land in wine country, business owner or semi-retired, two cars, grills and chills
+    vibe: their oldest is in college, the wine fridge is full, the dog is large, the SUV is paid off
     tract_marginal: B25075_022E   # owner-occupied homes valued $1M–$1.5M per tract (wine country mid-tier values)
     vector:
       # Hard gates
@@ -230,7 +230,7 @@ subcultures:
 
   - id: hill_people
     name: Toothless hill people
-    vibe: acid-dropping libertarian racists with more guns than teeth. they own the weed farms.
+    vibe: acid-dropping libertarian racists with more guns than teeth
     tract_marginal: B25024_002E   # mobile home unit count per tract — biases toward rural tracts
     vector:
       # Hard gates
@@ -287,7 +287,7 @@ subcultures:
 
   - id: stupid_guy
     name: Stupid guys
-    vibe: rural less-than-BA male, never married, low income, part-time retail/transport/construction, trailer
+    vibe: this guy doesn't even know how stupid he is. he's going nowhere.
     tract_marginal: B25024_002E   # mobile home unit count per tract — biases dot placement toward rural tracts
     vector:
       # Hard gates (all required)

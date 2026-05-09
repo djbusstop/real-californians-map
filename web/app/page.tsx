@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import Sidebar from "@/components/Sidebar";
+import { COLORS } from "@/lib/colors";
 
 const MapView = dynamic(() => import("@/components/MapView"), { ssr: false });
 
@@ -17,13 +18,13 @@ export interface Subculture {
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
 
 const SUBCULTURES: Subculture[] = [
-  { id: "queer_leftist", name: "Queer leftist", vibe: "urban, partnered, helping profession, transit/walk/bike" },
-  { id: "married_gays", name: "Married gays", vibe: "married, same-sex, of any description" },
+  { id: "queer_leftist", name: "Queer leftist", vibe: "takes the bus to therapy. hates capitalism but isn't bad at it" },
+  { id: "married_gays", name: "Married gays", vibe: "literally any gay married couple. that's the whole thing." },
   { id: "bilingual_baddie", name: "Bilingual baddies", vibe: "she's bilingual, she has to work, and she's fine with it DAMN" },
-  { id: "crumbl_cookie_couple", name: "Crumbl cookie couple", vibe: "just a normal married couple, new homeowners, two cars, Taylor Swift and golf" },
-  { id: "wino", name: "Winos", vibe: "50-75 business-owner homeowner, multiple cars, teen kids around, grills and chills" },
-  { id: "hill_people", name: "Toothless hill people", vibe: "acid-dropping libertarian racists with more guns than teeth. they own the weed farms." },
-  { id: "stupid_guy", name: "Stupid guys", vibe: "no diploma, gas station/cashier work, never married, trailer or parents' house" },
+  { id: "crumbl_cookie_couple", name: "Crumbl cookie couple", vibe: "newlywed homeowners with a peace lily, a Tesla, and a Bachelor in Paradise watch-party tradition" },
+  { id: "wino", name: "Winos", vibe: "their oldest is in college, the wine fridge is full, the dog is large, the SUV is paid off" },
+  { id: "hill_people", name: "Toothless hill people", vibe: "acid-dropping libertarian racists with more guns than teeth" },
+  { id: "stupid_guy", name: "Stupid guys", vibe: "this guy doesn't even know how stupid he is. he's going nowhere." },
 ];
 
 export default function Home() {
@@ -134,6 +135,50 @@ export default function Home() {
           scores={scores ?? {}}
           selectedIds={selected}
         />
+        {isMobile && selected.length > 0 && (
+          <div
+            style={{
+              position: "fixed",
+              bottom: 56,
+              left: 12,
+              zIndex: 10, // below sidebar (z-index 20) so it's hidden when sidebar opens
+              background: "rgba(255,255,255,0.96)",
+              border: "1px solid #e5e7eb",
+              borderRadius: 6,
+              padding: "8px 10px",
+              boxShadow: "0 2px 6px rgba(0,0,0,0.08)",
+              fontSize: 11,
+              maxWidth: "65vw",
+            }}
+          >
+            {selected.map((id) => {
+              const sub = SUBCULTURES.find((s) => s.id === id);
+              const color = COLORS[id] ?? "#7eaaff";
+              return (
+                <div
+                  key={id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "1px 0",
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: 4,
+                      background: color,
+                      flexShrink: 0,
+                    }}
+                  />
+                  <span>{sub?.name ?? id}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
         {(!scores || !pumaGeo) && (
           <div
             style={{
