@@ -33,6 +33,16 @@ export default function Home() {
     SUBCULTURES.map((s) => s.id)
   );
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [isMobile, setIsMobile] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 768);
+    check();
+    if (window.innerWidth < 768) setSidebarOpen(false);
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
 
   useEffect(() => {
     Promise.all([
@@ -78,7 +88,46 @@ export default function Home() {
         selected={selected}
         onToggle={toggle}
         scores={scores}
+        isMobile={isMobile}
+        open={sidebarOpen}
       />
+      {isMobile && sidebarOpen && (
+        <div
+          onClick={() => setSidebarOpen(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.35)",
+            zIndex: 15,
+          }}
+        />
+      )}
+      {isMobile && (
+        <button
+          onClick={() => setSidebarOpen((v) => !v)}
+          aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
+          style={{
+            position: "fixed",
+            top: 12,
+            left: sidebarOpen ? 332 : 12, // sits beside the sidebar (320px wide) when open
+            zIndex: 30,
+            width: 38,
+            height: 38,
+            borderRadius: 6,
+            background: "#ffffff",
+            border: "1px solid #e5e7eb",
+            cursor: "pointer",
+            fontSize: 18,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            boxShadow: "0 2px 6px rgba(0,0,0,0.08)",
+            transition: "left 250ms ease",
+          }}
+        >
+          {sidebarOpen ? "✕" : "☰"}
+        </button>
+      )}
       <div style={{ flex: 1, position: "relative" }}>
         <MapView
           geojson={pumaGeo ?? EMPTY_FC}
