@@ -21,31 +21,31 @@ interface Props {
 export default function Sidebar({ subcultures, selected, onToggle, scores }: Props) {
   const stats = scores
     ? subcultures.map((s) => {
-        const vals = Object.values(scores).map((p) => p[s.id] ?? 0);
-        const total = vals.reduce((a, b) => a + b, 0);
-        const peak = Math.max(...vals, 0);
-        return { id: s.id, total, peak };
+        let total = 0;
+        for (const vals of Object.values(scores)) total += vals[s.id] ?? 0;
+        return { id: s.id, total };
       })
-    : [];
-  const getStat = (id: string) => stats.find((s) => s.id === id);
+    : null;
+  const getStat = (id: string) => stats?.find((s) => s.id === id);
 
   return (
     <aside
       style={{
         width: 320,
-        background: "#0f1116",
-        borderRight: "1px solid #1f2330",
+        background: "#ffffff",
+        borderRight: "1px solid #e5e7eb",
         padding: "20px 18px",
         overflowY: "auto",
+        color: "#1a1f2e",
       }}
     >
-      <h1 style={{ margin: "0 0 12px", lineHeight: 1.05 }}>
+      <h1 style={{ margin: "0 0 12px", lineHeight: 1.05, width: "max-content" }}>
         <span
           style={{
             display: "block",
             fontSize: 11,
-            fontWeight: 400,
-            color: "#7d8499",
+            fontWeight: 600,
+            color: "#075985", /* darker California sky blue */
             textTransform: "uppercase",
             letterSpacing: 2,
           }}
@@ -59,7 +59,7 @@ export default function Sidebar({ subcultures, selected, onToggle, scores }: Pro
             fontSize: 30,
             fontWeight: 700,
             letterSpacing: -0.5,
-            color: "#e8eaed",
+            color: "#FB8500", /* California poppy orange */
             margin: "2px 0",
           }}
         >
@@ -69,8 +69,8 @@ export default function Sidebar({ subcultures, selected, onToggle, scores }: Pro
           style={{
             display: "block",
             fontSize: 11,
-            fontWeight: 400,
-            color: "#7d8499",
+            fontWeight: 600,
+            color: "#15803D", /* darker California green */
             textTransform: "uppercase",
             letterSpacing: 2,
             textAlign: "right",
@@ -79,10 +79,10 @@ export default function Sidebar({ subcultures, selected, onToggle, scores }: Pro
           live
         </span>
       </h1>
-      <p style={{ color: "#7d8499", fontSize: 12, margin: "0 0 8px" }}>
+      <p style={{ color: "#4b5563", fontSize: 12, margin: "0 0 8px" }}>
         Subculture proxies on CA tracts. Toggle multiple to overlay.
       </p>
-      <p style={{ color: "#5d6378", fontSize: 11, margin: "0 0 20px" }}>
+      <p style={{ color: "#6b7280", fontSize: 11, margin: "0 0 20px" }}>
         {selected.length} selected
         {selected.length > 0 && (
           <button
@@ -91,7 +91,7 @@ export default function Sidebar({ subcultures, selected, onToggle, scores }: Pro
               marginLeft: 8,
               background: "none",
               border: "none",
-              color: "#5d6378",
+              color: "#0EA5E9",
               fontSize: 11,
               cursor: "pointer",
               textDecoration: "underline",
@@ -114,48 +114,62 @@ export default function Sidebar({ subcultures, selected, onToggle, scores }: Pro
               onClick={() => onToggle(s.id)}
               style={{
                 textAlign: "left",
-                padding: "10px 12px",
+                padding: "14px 16px",
                 border: "1px solid",
-                borderColor: isSelected ? accent : "transparent",
-                background: isSelected ? "#1a1f2e" : "transparent",
+                borderColor: isSelected ? accent : "#e5e7eb",
+                background: isSelected ? `${accent}15` : "transparent",
                 borderRadius: 6,
-                color: "inherit",
+                color: "#1a1f2e",
                 cursor: "pointer",
                 fontFamily: "inherit",
                 fontSize: 13,
                 lineHeight: 1.4,
-                position: "relative",
-                paddingLeft: 18,
               }}
             >
               <div
                 style={{
-                  position: "absolute",
-                  left: 8,
-                  top: 14,
-                  width: 6,
-                  height: 6,
-                  borderRadius: 3,
-                  background: isSelected ? accent : "#2a3041",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 8,
                 }}
-              />
-              <div style={{ fontWeight: 500 }}>{s.name}</div>
-              <div style={{ color: "#7d8499", fontSize: 11, marginTop: 2 }}>
+              >
+                <span style={{ fontWeight: 600 }}>{s.name}</span>
+                <span
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: 4,
+                    background: isSelected ? accent : "#d1d5db",
+                    flexShrink: 0,
+                  }}
+                />
+              </div>
+              <div style={{ color: "#6b7280", fontSize: 11, marginTop: 2 }}>
                 {s.vibe}
               </div>
-              {stat && (
-                <div
-                  style={{
-                    color: isSelected ? accent : "#5d6378",
-                    fontSize: 10,
-                    marginTop: 6,
-                    fontFamily: "ui-monospace, monospace",
-                  }}
-                >
-                  total {Math.round(stat.total).toLocaleString()} · peak{" "}
-                  {Math.round(stat.peak).toLocaleString()}
-                </div>
-              )}
+              <div
+                style={{
+                  color: isSelected ? accent : "#9ca3af",
+                  fontSize: 10,
+                  marginTop: 6,
+                  fontFamily: "ui-monospace, monospace",
+                }}
+              >
+                {stat ? (
+                  `total ${Math.round(stat.total).toLocaleString()}`
+                ) : (
+                  <span
+                    style={{
+                      display: "inline-block",
+                      width: 80,
+                      height: 10,
+                      borderRadius: 3,
+                      background: "#e5e7eb",
+                    }}
+                  />
+                )}
+              </div>
             </button>
           );
         })}

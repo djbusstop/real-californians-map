@@ -14,6 +14,8 @@ export interface Subculture {
   vibe: string;
 }
 
+const EMPTY_FC: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
+
 const SUBCULTURES: Subculture[] = [
   { id: "queer_leftist", name: "Queer leftist", vibe: "urban, partnered, helping profession, transit/walk/bike" },
   { id: "bilingual_baddie", name: "Bilingual baddies", vibe: "she's bilingual, she has to work, and she's fine with it DAMN" },
@@ -75,14 +77,28 @@ export default function Home() {
         scores={scores}
       />
       <div style={{ flex: 1, position: "relative" }}>
-        {scores && pumaGeo ? (
-          <MapView
-            geojson={pumaGeo}
-            scores={scores}
-            selectedIds={selected}
-          />
-        ) : (
-          <div style={{ padding: 24, color: "#888" }}>Loading data…</div>
+        <MapView
+          geojson={pumaGeo ?? EMPTY_FC}
+          scores={scores ?? {}}
+          selectedIds={selected}
+        />
+        {(!scores || !pumaGeo) && (
+          <div
+            style={{
+              position: "absolute",
+              top: 12,
+              right: 60,
+              padding: "6px 12px",
+              background: "rgba(255,255,255,0.95)",
+              border: "1px solid #e5e7eb",
+              borderRadius: 4,
+              fontSize: 11,
+              color: "#6b7280",
+              pointerEvents: "none",
+            }}
+          >
+            Loading data…
+          </div>
         )}
       </div>
     </div>

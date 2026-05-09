@@ -8,8 +8,8 @@ body {
   padding: 0;
   height: 100%;
   font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
-  background: #0f1116;
-  color: #e8eaed;
+  background: #ffffff;
+  color: #1a1f2e;
   font-size: 14px;
   line-height: 1.4;
 }
@@ -21,3 +21,4 @@ body {
 a {
   color: inherit;
 }
+

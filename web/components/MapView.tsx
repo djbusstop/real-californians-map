@@ -102,21 +102,6 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
 
       const beforeId = beforeIdRef.current;
 
-      // Polygon outlines for geographic context (PUMAs or tracts).
-      map.addSource("pumas", { type: "geojson", data: geojson });
-      map.addLayer(
-        {
-          id: "pumas-outline",
-          type: "line",
-          source: "pumas",
-          paint: {
-            "line-color": "#b8bdc8",
-            "line-width": 0.4,
-            "line-opacity": 0.6,
-          },
-        },
-        beforeId
-      );
       // Dots layer: single source/layer, color driven by `subculture` property.
       map.addSource("dots", { type: "geojson", data: dots });
       map.addLayer(
@@ -162,13 +147,18 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // When dots change (selection change), swap source data.
+  // Push generated dots into the dots source whenever they change.
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
-    const src = map.getSource("dots") as maplibregl.GeoJSONSource | undefined;
-    if (src) src.setData(dots);
+    if (!map) return;
+    const apply = () => {
+      const src = map.getSource("dots") as maplibregl.GeoJSONSource | undefined;
+      if (src) src.setData(dots);
+    };
+    if (map.isStyleLoaded()) apply();
+    else map.once("load", apply);
   }, [dots]);
+
 
 
   return (
