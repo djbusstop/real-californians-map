@@ -7,7 +7,6 @@ export const COLORS: Record<string, string> = {
   bilingual_baddie: "#f97316",       // orange-500
   crumbl_cookie_couple: "#ec4899",   // pink-500
   hill_people: "#355E3B",            // hunter green
-  redneck: "#7F1D1D",                // dark flag red
 };
 
 export const FALLBACK_COLOR = "#7eaaff";
