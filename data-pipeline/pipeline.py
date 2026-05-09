@@ -50,7 +50,7 @@ API_KEY = os.environ.get("CENSUS_API_KEY")  # optional
 PERSON_VARS = [
     "PUMA",       # 5-digit PUMA code (2020 vintage uses PUMA20 in some places; API field is PUMA)
     "ST",         # state FIPS (always 06 here)
-    "PWGTP",      # person weight
+    "PWGTP",      # person weight (main estimate)
     "SERIALNO",   # household serial, for join to household record
     "AGEP",       # age
     "SEX",        # sex
@@ -87,6 +87,15 @@ PERSON_VARS = [
     "HINS1",      # employer-based health insurance (1 yes, 2 no)
     "WKL",        # when last worked (1 within 12 mo, 2 1-5 yrs ago, 3 5+ yrs ago, 4 never)
 ]
+
+# PUMS replicate weights (PWGTP1..PWGTP80) for successive-difference replication
+# (SDR) variance estimation. With these we can compute the sampling variance of
+# any weighted estimate via Var(θ̂) = (4/80) · Σ_r (θ̂_r − θ̂)², per the Census
+# methodology described in Wolter 2007, *Introduction to Variance Estimation*,
+# 2nd ed., Springer. Used by the Fay-Herriot small-area model.
+N_REPLICATE_WEIGHTS = 80
+REPLICATE_WEIGHT_VARS = [f"PWGTP{i}" for i in range(1, N_REPLICATE_WEIGHTS + 1)]
+PERSON_VARS_WITH_REPLICATES = PERSON_VARS + REPLICATE_WEIGHT_VARS
 
 # Household-record variables (acs5/pums "housing" file).
 HOUSING_VARS = [
@@ -227,18 +236,28 @@ def fetch_puma_list() -> list[str]:
 
 
 def fetch_pums() -> pd.DataFrame:
-    """Download CA PUMS person + household CSVs, join, return a single DataFrame."""
+    """Download CA PUMS person + household CSVs, join, return a single DataFrame.
+
+    The cached parquet must contain the PUMS replicate weights (PWGTP1..PWGTP80)
+    for the Fay-Herriot variance estimator. If an older cache lacks them, we
+    regenerate the parquet rather than silently use an incomplete cache.
+    """
     parquet_out = DATA / "pums_ca.parquet"
     if parquet_out.exists():
         print(f"[cache] loading {parquet_out}")
-        return pd.read_parquet(parquet_out)
+        df = pd.read_parquet(parquet_out)
+        if "PWGTP80" in df.columns:
+            return df
+        print("[cache] cached parquet lacks replicate weights; regenerating")
+        parquet_out.unlink()
 
     person_zip = _download(PUMS_PERSON_URL, CACHE / "pums_persons_ca.zip")
     housing_zip = _download(PUMS_HOUSING_URL, CACHE / "pums_housing_ca.zip")
 
-    print("[parse] reading person records...")
-    persons = _read_pums_csv(person_zip, set(PERSON_VARS))
-    print(f"[parse] {len(persons):,} person records, columns: {list(persons.columns)}")
+    print("[parse] reading person records (incl. 80 replicate weights for FH)...")
+    persons = _read_pums_csv(person_zip, set(PERSON_VARS_WITH_REPLICATES))
+    print(f"[parse] {len(persons):,} person records, "
+          f"{len(persons.columns)} columns including PWGTP1..PWGTP80")
 
     print("[parse] reading housing records...")
     housing = _read_pums_csv(housing_zip, set(HOUSING_VARS))
@@ -579,6 +598,144 @@ def _fit_ridge_nnls(X_train, y_train, lam: float):
     return coefs
 
 
+def _estimate_sigma2_u_prasad_rao(
+    y, X, beta, sigma2_e
+):
+    """Prasad-Rao method-of-moments estimator for the random-effect variance
+    σ²_u in the Fay-Herriot area-level model.
+
+    σ̂²_u = max(0, (1/(m − p)) · [Σ_p (y_p − X_p β̂)² − Σ_p σ²_e_p])
+
+    where m is the number of areas and p is the number of parameters.
+    Reference: Prasad & Rao 1990, *JASA* 85(409), 163-171.
+    """
+    import numpy as np
+
+    m = len(y)
+    p = X.shape[1]
+    if m <= p:
+        return 0.0
+    residuals_sq = (y - X @ beta) ** 2
+    estimate = (residuals_sq.sum() - sigma2_e.sum()) / max(m - p, 1)
+    return float(max(0.0, estimate))
+
+
+def _compute_eblup(y, X, beta, sigma2_e, sigma2_u):
+    """Empirical Best Linear Unbiased Predictor for each area under the
+    Fay-Herriot model:
+
+        ŷ_FH_p = X_p β̂ + γ_p · (y_p − X_p β̂),    γ_p = σ²_u / (σ²_u + σ²_e_p)
+
+    γ_p is the shrinkage factor: when sampling variance σ²_e_p is large
+    relative to between-area variance σ²_u, γ_p is small and the area is
+    shrunk toward the synthetic regression prediction. When σ²_e_p is small,
+    γ_p is near 1 and the direct estimate is preserved.
+
+    Returns (eblup_predictions, gamma_per_area).
+    """
+    import numpy as np
+
+    synthetic = X @ beta
+    direct_residual = y - synthetic
+    denom = sigma2_u + sigma2_e
+    gamma = np.where(denom > 0, sigma2_u / denom, 0.0)
+    eblup = synthetic + gamma * direct_residual
+    return eblup, gamma
+
+
+def _compute_conley_se(X_z, residuals, lam, puma_ids, centroids, bandwidth_km=75.0):
+    """Conley spatial HAC standard errors (Conley 1999, *J. Econometrics* 92).
+
+    Computes V = (X'X + λI)⁻¹ · X' Ω X · (X'X + λI)⁻¹ where Ω is the
+    distance-weighted residual cross-product matrix using a Bartlett kernel:
+
+        Ω_ij = max(0, 1 − d_ij / h) · ε_i · ε_j
+
+    Returns standard errors (sqrt of diagonal) for each coefficient.
+
+    The (X'X + λI)⁻¹ form is the ridge-adjusted analog of the OLS sandwich
+    estimator. With the NNLS non-negativity constraint, this is approximate
+    for any coefficient that hit the boundary β = 0 (whose effective SE is
+    degenerate); the bootstrap procedure is the rigorous companion estimate.
+    """
+    import numpy as np
+
+    n, p = X_z.shape
+    if len(puma_ids) != n or not centroids:
+        return [float("nan")] * p
+
+    coords = np.array(
+        [centroids.get(pid, (np.nan, np.nan)) for pid in puma_ids],
+        dtype=float,
+    )
+    if np.isnan(coords).any():
+        # Some PUMAs lack centroids; fall back to non-spatial OLS-like SE.
+        return [float("nan")] * p
+
+    # Approximate great-circle distance in km via haversine-like formula on
+    # lat/lon. For the CA bounding box this is well within tolerance.
+    lat = np.deg2rad(coords[:, 1])
+    lon = np.deg2rad(coords[:, 0])
+    dlat = lat[:, None] - lat[None, :]
+    dlon = lon[:, None] - lon[None, :]
+    a = np.sin(dlat / 2) ** 2 + np.cos(lat[:, None]) * np.cos(lat[None, :]) * np.sin(dlon / 2) ** 2
+    d_km = 2 * 6371.0 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
+
+    K = np.maximum(0.0, 1.0 - d_km / bandwidth_km)
+    Omega = K * np.outer(residuals, residuals)
+
+    XtX_lam_inv = np.linalg.pinv(X_z.T @ X_z + lam * np.eye(p))
+    V = XtX_lam_inv @ X_z.T @ Omega @ X_z @ XtX_lam_inv
+    se = np.sqrt(np.maximum(np.diag(V), 0.0))
+    return [float(s) for s in se]
+
+
+def _compute_bootstrap_ci(
+    Xz, y_centered, lam, n_bootstrap=1000, alpha=0.05, seed=42
+):
+    """Non-parametric percentile bootstrap confidence intervals for ridge+NNLS
+    coefficients (Efron & Tibshirani 1993, *An Introduction to the Bootstrap*).
+
+    Resamples PUMAs with replacement n_bootstrap times, refits the same
+    ridge+NNLS model at fixed λ on each resample, and returns the (α/2, 1-α/2)
+    percentile interval per coefficient.
+
+    Notes:
+    - λ is held fixed at the LOOCV-selected value rather than re-tuned per
+      resample; this is "post-selection bootstrap" which understates total
+      uncertainty by the amount due to λ-selection. Standard tradeoff for
+      computational tractability (Hastie et al. 2009 §7.10.2).
+    - Residuals are spatially correlated (significant Moran's I), so the
+      i.i.d. resampling assumption underestimates uncertainty modestly.
+      Conley SEs are reported as a spatially-aware companion estimate.
+
+    Returns (ci_lower, ci_upper) as lists of length p.
+    """
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    n, p = Xz.shape
+    coef_samples = np.zeros((n_bootstrap, p))
+
+    for b in range(n_bootstrap):
+        idx = rng.integers(0, n, size=n)
+        coefs_b = _fit_ridge_nnls(Xz[idx], y_centered[idx], lam)
+        if coefs_b is None:
+            coef_samples[b] = np.nan
+        else:
+            coef_samples[b] = coefs_b
+
+    # Drop any failed fits before computing percentiles.
+    mask = ~np.isnan(coef_samples).any(axis=1)
+    coef_samples = coef_samples[mask]
+    if len(coef_samples) < 100:
+        return [float("nan")] * p, [float("nan")] * p
+
+    lower = np.percentile(coef_samples, 100 * alpha / 2, axis=0)
+    upper = np.percentile(coef_samples, 100 * (1 - alpha / 2), axis=0)
+    return [float(x) for x in lower], [float(x) for x in upper]
+
+
 def _compute_vifs(Xz):
     """Variance Inflation Factors for each column of standardized design matrix Xz.
     VIF_j = 1 / (1 - R²_j) where R²_j is the R² from regressing column j on the rest.
@@ -611,6 +768,9 @@ def fit_area_level_model(
     puma_marginals: list[dict[str, float]],
     marginal_names: list[str],
     spatial_weights: dict[str, list[str]] | None = None,
+    puma_score_variance: dict[str, float] | None = None,
+    puma_centroids: dict[str, tuple[float, float]] | None = None,
+    n_bootstrap: int = 1000,
 ) -> dict | None:
     """Fit area-level synthetic SAE model (Fay-Herriot family) with NNLS+Ridge.
 
@@ -721,6 +881,52 @@ def fit_area_level_model(
             residuals.tolist(), keep_pumas, spatial_weights
         )
 
+    # ── Fay-Herriot EBLUP shrinkage ──
+    # If we have per-PUMA sampling variances, estimate σ²_u via Prasad-Rao
+    # method-of-moments and compute the EBLUP for each area.
+    fh_summary: dict | None = None
+    eblup_by_puma: dict[str, float] = {}
+    if puma_score_variance is not None:
+        sigma2_e_array = np.array(
+            [float(puma_score_variance.get(p, 0.0)) for p in keep_pumas],
+            dtype=float,
+        )
+        if (sigma2_e_array > 0).any():
+            sigma2_u = _estimate_sigma2_u_prasad_rao(
+                y, Xz, coefs, sigma2_e_array
+            )
+            eblup_predictions, gamma = _compute_eblup(
+                y, Xz, coefs, sigma2_e_array, sigma2_u
+            )
+            # Intercept the centered fit by adding y_mean back into synthetic
+            # (since coefs are centered-y based; X β̂ here is z-scaled).
+            synthetic_full = Xz @ coefs + y_mean
+            eblup_predictions = synthetic_full + gamma * (y - synthetic_full)
+            for pid, val in zip(keep_pumas, eblup_predictions):
+                eblup_by_puma[pid] = float(max(0.0, val))
+            fh_summary = {
+                "sigma2_u": float(sigma2_u),
+                "mean_sigma2_e": float(sigma2_e_array.mean()),
+                "median_gamma": float(np.median(gamma)),
+                "min_gamma": float(np.min(gamma)),
+                "max_gamma": float(np.max(gamma)),
+            }
+
+    # ── Conley spatial HAC standard errors ──
+    conley_se: list[float] | None = None
+    if puma_centroids is not None:
+        conley_se = _compute_conley_se(
+            Xz, residuals, best_lam, keep_pumas, puma_centroids
+        )
+
+    # ── Bootstrap percentile confidence intervals ──
+    boot_ci_lower: list[float] | None = None
+    boot_ci_upper: list[float] | None = None
+    if n_bootstrap and n_bootstrap > 0:
+        boot_ci_lower, boot_ci_upper = _compute_bootstrap_ci(
+            Xz, y_centered, best_lam, n_bootstrap=n_bootstrap
+        )
+
     return {
         "method": "ridge_nnls",
         "n_pumas": int(n_obs),
@@ -739,7 +945,53 @@ def fit_area_level_model(
         "morans_i_residual": moran_i,
         "morans_i_z_score": moran_z,
         "morans_i_p_value": moran_p,
+        "fay_herriot": fh_summary,
+        "eblup_by_puma": eblup_by_puma,
+        "conley_se": conley_se,
+        "bootstrap_ci_lower": boot_ci_lower,
+        "bootstrap_ci_upper": boot_ci_upper,
+        "bootstrap_n": n_bootstrap,
+        "puma_ids": list(keep_pumas),
     }
+
+
+def build_puma_centroids(puma_shp_dir: Path) -> dict[str, tuple[float, float]]:
+    """Return {puma_id: (lon, lat)} for the centroid of each PUMA polygon.
+
+    Used by the Conley spatial HAC standard error computation. PUMA ids are
+    normalized to the 5-char PUMA code (matching keys used elsewhere).
+    """
+    import geopandas as gpd
+
+    shp_files = list(puma_shp_dir.rglob("*.shp"))
+    if not shp_files:
+        return {}
+    gdf = gpd.read_file(shp_files[0])
+    id_col = None
+    for c in ["PUMACE20", "PUMACE", "PUMA20", "PUMA", "GEOID20", "GEOID"]:
+        if c in gdf.columns:
+            id_col = c
+            break
+    if id_col is None:
+        return {}
+
+    def normalize(raw: str) -> str:
+        s = str(raw)
+        if id_col in ("GEOID20", "GEOID") and len(s) == 7 and s.startswith("06"):
+            return s[2:]
+        return s.zfill(5) if s.isdigit() and len(s) <= 5 else s
+
+    centroids: dict[str, tuple[float, float]] = {}
+    # Use representative_point for stability (centroid can fall outside
+    # non-convex polygons; representative_point is guaranteed interior).
+    for raw_id, geom in zip(gdf[id_col], gdf.geometry):
+        pid = normalize(raw_id)
+        try:
+            pt = geom.representative_point()
+            centroids[pid] = (float(pt.x), float(pt.y))
+        except Exception:
+            pass
+    return centroids
 
 
 def build_puma_queen_neighbors(puma_shp_dir: Path) -> dict[str, list[str]]:
@@ -868,6 +1120,9 @@ def distribute_to_tracts(
     tract_to_puma: dict,
     tract_pop: dict[str, float],
     spatial_weights: dict[str, list[str]] | None = None,
+    puma_score_variance: dict[str, dict[str, float]] | None = None,
+    puma_centroids: dict[str, tuple[float, float]] | None = None,
+    n_bootstrap: int = 1000,
 ) -> tuple[dict, dict]:
     """Distribute PUMA-level cohort scores to tracts via area-level SAE.
 
@@ -925,17 +1180,39 @@ def distribute_to_tracts(
             p: vals.get(sub_id, 0.0) for p, vals in puma_scores.items()
         }
 
+        # Per-PUMA sampling variance for this cohort (FH input).
+        cohort_puma_variance: dict[str, float] | None = None
+        if puma_score_variance is not None:
+            cohort_puma_variance = {
+                p: puma_score_variance.get(p, {}).get(sub_id, 0.0)
+                for p in puma_score_variance
+            }
+
         # ── Try regression ──
         model = None
         if marginals_list:
-            print(f"[fit] {sub_id}: ridge+NNLS with LOOCV...")
+            print(f"[fit] {sub_id}: ridge+NNLS with FH+Conley+bootstrap...")
             model = fit_area_level_model(
                 cohort_puma_scores,
                 puma_pop,
                 puma_marginals,
                 names,
                 spatial_weights=spatial_weights,
+                puma_score_variance=cohort_puma_variance,
+                puma_centroids=puma_centroids,
+                n_bootstrap=n_bootstrap,
             )
+
+        # Use EBLUP-shrunk PUMA totals as the raking target if available;
+        # falls through to direct PUMS estimates otherwise.
+        eblup_by_puma: dict[str, float] = (
+            (model or {}).get("eblup_by_puma", {}) if model else {}
+        )
+
+        def raking_target(p: str) -> float:
+            if eblup_by_puma and p in eblup_by_puma:
+                return float(eblup_by_puma[p])
+            return float(cohort_puma_scores.get(p, 0.0))
 
         if model and model.get("loocv_r_squared", -1) >= LOOCV_THRESHOLD:
             # Predict tract-level raw counts, then rake within each PUMA.
@@ -957,7 +1234,7 @@ def distribute_to_tracts(
                 return max(z_pred, 0.0)
 
             for puma, tract_geoids in tracts_by_puma.items():
-                puma_score = cohort_puma_scores.get(puma, 0.0)
+                puma_score = raking_target(puma)
                 if puma_score == 0:
                     continue
                 raw = {t: predict(t) for t in tract_geoids}
@@ -977,7 +1254,7 @@ def distribute_to_tracts(
             n_marg = len(marginals_list)
             equal_weights = [1.0] * n_marg
             for puma, tract_geoids in tracts_by_puma.items():
-                puma_score = cohort_puma_scores.get(puma, 0.0)
+                puma_score = cohort_puma_scores.get(puma, 0.0)  # no EBLUP without regression
                 if puma_score == 0:
                     continue
                 if n_marg == 0:
@@ -1134,6 +1411,47 @@ def aggregate_to_puma(df: pd.DataFrame, scores: dict[str, pd.Series]) -> dict:
     return out
 
 
+def aggregate_to_puma_variance(
+    df: pd.DataFrame, scores: dict[str, pd.Series]
+) -> dict[str, dict[str, float]]:
+    """Compute the sampling variance of each PUMA-level cohort estimate via
+    the Census-published successive-difference replication (SDR) formula:
+
+        Var(θ̂) = (4/80) · Σ_r (θ̂_r − θ̂)²
+
+    where θ̂ uses the main weight PWGTP and θ̂_r uses replicate weight PWGTPr.
+    Reference: Wolter 2007, *Introduction to Variance Estimation*, 2nd ed.,
+    Springer, §3.7; Census Bureau, *PUMS Accuracy of the Data* (2023).
+
+    Returns: { puma_code: { subculture_id: sampling_variance_of_score } }.
+    """
+    if "PWGTP1" not in df.columns:
+        # Replicate weights weren't loaded; cannot estimate sampling variance.
+        return {}
+
+    rep_cols = [f"PWGTP{i}" for i in range(1, N_REPLICATE_WEIGHTS + 1)]
+    rep_cols = [c for c in rep_cols if c in df.columns]
+    if len(rep_cols) < 4:
+        return {}
+
+    out: dict[str, dict[str, float]] = {}
+    puma_index = df["PUMA"].astype(str)
+
+    for sub_id, score in scores.items():
+        # Main estimate per PUMA.
+        main_per_puma = (score * df["PWGTP"]).groupby(puma_index).sum()
+        # 80 replicate estimates per PUMA.
+        rep_per_puma = pd.DataFrame(index=main_per_puma.index)
+        for r_col in rep_cols:
+            rep_per_puma[r_col] = (score * df[r_col]).groupby(puma_index).sum()
+        # SDR variance with finite-population correction factor 4/80.
+        squared_dev = rep_per_puma.subtract(main_per_puma, axis=0).pow(2)
+        var_per_puma = (4.0 / len(rep_cols)) * squared_dev.sum(axis=1)
+        for puma, val in var_per_puma.items():
+            out.setdefault(str(puma), {})[sub_id] = float(val)
+    return out
+
+
 # ----------------------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------------------
@@ -1162,6 +1480,17 @@ def main() -> None:
     out_scores = DATA / "scores.json"
     out_scores.write_text(json.dumps(puma_scores, indent=2))
     print(f"[save] {out_scores}")
+
+    # PUMS sampling variance per PUMA per cohort, via successive-difference
+    # replication on PWGTP1..PWGTP80. Used as σ²_e_p in the Fay-Herriot model.
+    print("[variance] computing PUMS sampling variance via SDR (80 replicates)...")
+    puma_score_variance = aggregate_to_puma_variance(df, scores)
+    if puma_score_variance:
+        out_variance = DATA / "scores_variance.json"
+        out_variance.write_text(json.dumps(puma_score_variance, indent=2))
+        print(f"[save] {out_variance}")
+    else:
+        print("[variance] replicate weights not available; FH will degenerate to OLS")
 
     # Sanity totals.
     summary = {
@@ -1219,6 +1548,15 @@ def main() -> None:
         print(f"[warn] spatial weights failed ({e}); Moran's I will be unavailable")
         spatial_weights = None
 
+    # PUMA centroids for Conley spatial HAC standard errors.
+    print("[tract] building PUMA centroids for Conley SE...")
+    try:
+        puma_centroids = build_puma_centroids(CACHE / "puma_shp")
+        print(f"[tract] centroids: {len(puma_centroids)} PUMAs")
+    except Exception as e:
+        print(f"[warn] centroids failed ({e}); Conley SE will be unavailable")
+        puma_centroids = None
+
     tract_scores, model_summaries = distribute_to_tracts(
         puma_scores,
         tract_marginals_by_cohort,
@@ -1226,6 +1564,9 @@ def main() -> None:
         tract_to_puma,
         tract_pop,
         spatial_weights=spatial_weights,
+        puma_score_variance=puma_score_variance if puma_score_variance else None,
+        puma_centroids=puma_centroids if puma_centroids else None,
+        n_bootstrap=1000,
     )
     out_tract_scores = DATA / "tract_scores.json"
     out_tract_scores.write_text(json.dumps(tract_scores))
@@ -1245,11 +1586,18 @@ def main() -> None:
                 (v for v in summary.get("vif", []) if v != float("inf")),
                 default=float("nan"),
             )
+            fh = summary.get("fay_herriot")
+            fh_str = (
+                f" FH(σ²_u={fh['sigma2_u']:.0f},γ_med={fh['median_gamma']:.2f})"
+                if fh
+                else ""
+            )
             print(
                 f"[model] {sub_id:25s} ridge_nnls "
                 f"R²={summary['r_squared']:.3f} "
                 f"LOOCV_R²={summary['loocv_r_squared']:+.3f} "
-                f"λ={summary['lambda']:g} max_VIF={max_vif:.1f}{cond_str}{morans_str}"
+                f"λ={summary['lambda']:g} max_VIF={max_vif:.1f}"
+                f"{cond_str}{morans_str}{fh_str}"
             )
         else:
             print(

@@ -66,7 +66,9 @@ The result is a weighted population estimate of the subculture's PUMA-level coho
 
 ## Geographic distribution (small-area estimation)
 
-PUMS is a PUMA-level dataset. To render the map at higher resolution than 281 polygons, we apply a synthetic estimator from the Fay-Herriot family (Fay & Herriot 1979), distributing each PUMA-level cohort estimate across its constituent tracts conditional on chosen tract-level covariates. The choice to operate at the area level rather than fit a unit-level model reflects that PUMS records carry no tract identifier (Census disclosure rule), so tract-level direct estimation from microdata is not feasible.
+PUMS is a PUMA-level dataset. To render the map at higher resolution than 281 polygons, we apply a Fay-Herriot area-level model (Fay & Herriot 1979) with EBLUP shrinkage, distributing each PUMA-level cohort estimate across its constituent tracts conditional on chosen tract-level covariates. The choice to operate at the area level rather than fit a unit-level model reflects that PUMS records carry no tract identifier (Census disclosure rule), so tract-level direct estimation from microdata is not feasible.
+
+The procedure has three estimation steps: (1) a non-negative ridge regression that produces a synthetic predictor, (2) a Fay-Herriot variance estimation step that combines the synthetic predictor with the direct PUMS estimate via EBLUP shrinkage, and (3) tract-level allocation via raking to the EBLUP totals. Inference on the regression coefficients uses two complementary methods: Conley spatial HAC standard errors and non-parametric bootstrap percentile confidence intervals.
 
 ### Step 1 — Fit a non-negative ridge regression per cohort
 
@@ -94,7 +96,41 @@ Three deliberate methodological choices stand behind this specification:
 
 **Standardization.** Without standardization, the L2 penalty would shrink large-scale predictors (e.g., raw population counts in the hundreds of thousands) less than small-scale predictors (e.g., niche language speaker counts in the thousands), an inadvertent prior on the answer.
 
-### Step 2 — Predict tract scores and rake to PUMA totals
+### Step 2 — Estimate sampling variance via successive-difference replication (SDR)
+
+The PUMS file ships with 80 successive-difference replicate weights (`PWGTP1`..`PWGTP80`) constructed by the Census Bureau for variance estimation. For each cohort and each PUMA, we compute the cohort score 81 times: once using the main weight `PWGTP`, and once each using `PWGTPr` for *r* = 1..80. The sampling variance of the PUMA-level cohort estimate follows the Census-published formula (Wolter 2007, *Introduction to Variance Estimation*, 2nd ed., Springer, §3.7; Census Bureau, *PUMS Accuracy of the Data* 2023):
+
+```
+Var(score_p) = (4/80) · Σ_r (score_p,r − score_p)²
+```
+
+These per-PUMA sampling variances σ²_e_p enter the next step as known quantities, distinguishing this from a pure synthetic estimator.
+
+### Step 3 — Fay-Herriot EBLUP shrinkage
+
+The Fay-Herriot area-level model is
+
+```
+y_p = X_p β + u_p + e_p,    e_p ~ N(0, σ²_e_p),   u_p ~ N(0, σ²_u)
+```
+
+where `y_p` is the PUMA-level direct estimate, `X_p β` is the synthetic predictor from the ridge regression, `e_p` is sampling error with known variance σ²_e_p (from Step 2), and `u_p` is a between-area random effect with unknown variance σ²_u.
+
+We estimate σ²_u via the Prasad-Rao method-of-moments estimator (Prasad & Rao 1990, *JASA* 85(409), 163–171):
+
+```
+σ̂²_u = max(0, (1 / (m − p)) · [Σ_p (y_p − X_p β̂)² − Σ_p σ²_e_p])
+```
+
+where *m* is the number of PUMAs and *p* is the number of regression parameters. The Empirical Best Linear Unbiased Predictor (EBLUP) for each PUMA is then a weighted combination of the direct estimate and the synthetic predictor:
+
+```
+ŷ_FH_p = X_p β̂ + γ_p · (y_p − X_p β̂),    γ_p = σ̂²_u / (σ̂²_u + σ²_e_p)
+```
+
+The shrinkage factor γ_p has a clear interpretation: when σ²_e_p is large relative to σ̂²_u (i.e., the PUMS direct estimate for this PUMA has high sampling variance, typically because few records matched the cohort), γ_p is small and the EBLUP shrinks toward the regression prediction. When σ²_e_p is small, γ_p approaches one and the direct estimate is preserved. This is the canonical small-area-estimation tradeoff between synthetic bias and direct-estimate variance.
+
+### Step 4 — Predict tract scores and rake to EBLUP totals
 
 For each tract *t* in PUMA *p*, the model predicts a raw tract count using the standardization parameters fit at PUMA level:
 
@@ -102,13 +138,13 @@ For each tract *t* in PUMA *p*, the model predicts a raw tract count using the s
 predicted(t) = ȳ + Σ_k β_k · ((x_k(t) − μ_k) / σ_k)
 ```
 
-Negative predictions (which can arise from below-mean predictor values combined with non-negative coefficients in a centered model) are clipped to zero. Within each PUMA, predicted tract counts are then *raked* (proportionally rescaled) so they sum to the PUMS-derived `PUMA_score(p, s)`:
+Negative predictions (which can arise from below-mean predictor values combined with non-negative coefficients in a centered model) are clipped to zero. Within each PUMA, predicted tract counts are then *raked* (proportionally rescaled) so they sum to the EBLUP `ŷ_FH_p` rather than the raw direct estimate `y_p`:
 
 ```
-tract_score(t, s) = predicted(t) · ( PUMA_score(p, s) / Σ_{t'∈T(p)} predicted(t') )
+tract_score(t, s) = predicted(t) · ( ŷ_FH_p / Σ_{t'∈T(p)} predicted(t') )
 ```
 
-Raking is a benchmarking constraint standard in production small-area estimation (Rao & Molina 2015, *Small Area Estimation*, 2nd ed., Wiley, §6.4). It ensures the tract-level estimates are internally consistent with the PUMA-level direct estimates: the cohort total inside any PUMA never exceeds what PUMS measured, regardless of model error.
+Raking is a benchmarking constraint standard in production small-area estimation (Rao & Molina 2015, *Small Area Estimation*, 2nd ed., Wiley, §6.4). Using the EBLUP as the raking target rather than the direct estimate is what propagates the sampling-variance correction down to the tract level: noisy PUMS estimates for small-cohort PUMAs are stabilized toward the regression line before being distributed across tracts.
 
 ### Diagnostics
 
@@ -121,6 +157,13 @@ For each cohort, `data/model_summaries.json` records:
 - **Condition number** of the standardized design matrix as a global multicollinearity diagnostic.
 - **Global Moran's I on residuals** (Moran 1950) using a queen-contiguity binary spatial weights matrix on the PUMA polygons (Cliff & Ord 1981). The reported z-score and p-value are computed under the normality assumption. A significant Moran's I in residuals indicates the linear model leaves spatial structure unexplained; we discuss this explicitly in the Limitations section rather than absorb it silently.
 - **Cross-validation grid** showing LOOCV R² at each candidate λ, so the regularization choice is auditable.
+- **Fay-Herriot variance components** per cohort: the estimated random-effect variance σ̂²_u, the mean sampling variance σ²_e across PUMAs, and the median, minimum, and maximum shrinkage factor γ. Together these summarize how aggressively the cohort's PUMA-level estimates are shrunk toward the regression line.
+- **Conley spatial HAC standard errors** (Conley 1999, *Journal of Econometrics* 92, 1-45). A spatially-aware analog of Newey-West HAC, computed as
+  ```
+  V = (X′X + λI)⁻¹ · X′ Ω X · (X′X + λI)⁻¹,    Ω_ij = K(d_ij / h) · ε_i ε_j
+  ```
+  where d_ij is the great-circle distance between PUMA centroids in kilometers, K is a Bartlett kernel, h = 75 km is the bandwidth, and the (X′X + λI)⁻¹ form is the ridge-adjusted analog of the OLS sandwich. The reported standard error per coefficient is the square root of the corresponding diagonal element of V. Conley SEs are valid under heteroscedastic, spatially-dependent residuals — exactly the situation our Moran's I diagnostics confirm we have. Bandwidth selection follows Bester, Conley & Hansen 2011, *Journal of Econometrics* 165(2), 137–151.
+- **Non-parametric bootstrap percentile confidence intervals** for each coefficient (Efron & Tibshirani 1993, *An Introduction to the Bootstrap*, Chapman & Hall, §13). PUMAs are resampled with replacement 1000 times; at each resample we refit the NNLS+Ridge regression at the LOOCV-selected λ and record the coefficient vector. The 95% CI is the (2.5%, 97.5%) percentile of the empirical distribution. The bootstrap correctly handles both the non-negativity constraint and the ridge regularization, which the Conley estimator handles only approximately. Two complementary inference statements are reported per coefficient: the spatially-aware Conley SE and the non-parametric bootstrap CI; agreement between the two strengthens the inferential claim, disagreement is itself informative. Note that λ is held fixed at the LOOCV-selected value rather than retuned per resample, a "post-selection bootstrap" that ignores λ-selection uncertainty (Hastie, Tibshirani & Friedman 2009, *Elements of Statistical Learning* §7.10.2).
 
 ### Fallback: equal-weight share-blend
 
@@ -165,7 +208,7 @@ Dot counts are proportional to the underlying tract-level score within a single 
 
 **Tract-level estimates inherit marginal bias.** Each cohort's tract-level distribution is only as accurate as the correlation between the chosen marginals and the unobserved true cohort distribution.
 
-**PUMS is a 1% sample.** Sampling weights are used throughout, but cohorts with very few matching records carry larger sampling variance, particularly at fine geographic resolution. The current model is a synthetic estimator and does not explicitly account for the sampling variance of PUMS direct estimates. A full Fay-Herriot specification with replicate-weight variance estimation is documented as a planned methodological improvement.
+**PUMS is a 1% sample.** Sampling weights are used throughout. Per-PUMA sampling variances of the cohort estimates are computed from the 80 successive-difference replicate weights and propagated into the small-area estimation step via the Fay-Herriot EBLUP. PUMAs with very few matching cohort records have large σ²_e_p and shrink heavily toward the regression line; PUMAs with many records preserve their direct estimate. The shrinkage factors γ_p are reported per cohort.
 
 **Residuals exhibit significant positive spatial autocorrelation.** Across all cohorts where the regression fits, Moran's I on PUMA-level residuals is significantly positive (typically *I* ≈ 0.27–0.42 with *z* > 7, *p* < 10⁻¹⁵ under the normality assumption). This indicates the linear model leaves geographic structure unexplained: cohorts cluster in ways the demographic and housing predictors cannot fully capture. We deliberately retain a non-spatial specification because (a) the unit of inference is the PUMA, not the tract, with tract-level allocation conditional on the PUMA total, and (b) a full spatial regression (SAR or SEM in the sense of Anselin 1988, *Spatial Econometrics*) is beyond the scope of this descriptive cartographic project. We disclose the diagnostic per cohort rather than absorb it. Future work could fit `y = ρWy + Xβ + ε` (LeSage & Pace 2009, *Introduction to Spatial Econometrics*) to address residual spatial dependence.
 
@@ -189,12 +232,18 @@ Modifying a single condition in the configuration, re-running the pipeline (appr
 
 - Anselin, L. (1988). *Spatial Econometrics: Methods and Models*. Kluwer Academic Publishers.
 - Belsley, D. A., Kuh, E., & Welsch, R. E. (1980). *Regression Diagnostics: Identifying Influential Data and Sources of Collinearity*. Wiley.
+- Bester, C. A., Conley, T. G., & Hansen, C. B. (2011). Inference with dependent data using cluster covariance estimators. *Journal of Econometrics*, 165(2), 137–151.
 - Cliff, A. D., & Ord, J. K. (1981). *Spatial Processes: Models and Applications*. Pion.
+- Conley, T. G. (1999). GMM estimation with cross sectional dependence. *Journal of Econometrics*, 92(1), 1–45.
 - Deming, W. E., & Stephan, F. F. (1940). On a least squares adjustment of a sampled frequency table when the expected marginal totals are known. *Annals of Mathematical Statistics*, 11(4), 427–444.
+- Efron, B., & Tibshirani, R. (1993). *An Introduction to the Bootstrap*. Chapman & Hall.
 - Fay, R. E., & Herriot, R. A. (1979). Estimates of income for small places: An application of James-Stein procedures to census data. *Journal of the American Statistical Association*, 74(366), 269–277.
 - Hastie, T., Tibshirani, R., & Friedman, J. (2009). *The Elements of Statistical Learning* (2nd ed.). Springer.
 - Hoerl, A. E., & Kennard, R. W. (1970). Ridge regression: Biased estimation for nonorthogonal problems. *Technometrics*, 12(1), 55–67.
 - Lawson, C. L., & Hanson, R. J. (1974). *Solving Least Squares Problems*. Prentice-Hall.
 - LeSage, J. P., & Pace, R. K. (2009). *Introduction to Spatial Econometrics*. CRC Press.
 - Moran, P. A. P. (1950). Notes on continuous stochastic phenomena. *Biometrika*, 37(1/2), 17–23.
+- Prasad, N. G. N., & Rao, J. N. K. (1990). The estimation of the mean squared error of small-area estimators. *Journal of the American Statistical Association*, 85(409), 163–171.
 - Rao, J. N. K., & Molina, I. (2015). *Small Area Estimation* (2nd ed.). Wiley.
+- U.S. Census Bureau. (2023). *PUMS Accuracy of the Data*. American Community Survey documentation.
+- Wolter, K. M. (2007). *Introduction to Variance Estimation* (2nd ed.). Springer.
