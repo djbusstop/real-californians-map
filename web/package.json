@@ -1,0 +1,27 @@
+{
+  "name": "real-californians",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "sync-data": "mkdir -p public/data && cp ../data-pipeline/data/scores.json ../data-pipeline/data/pumas_ca.geojson ../data-pipeline/data/summary.json ../data-pipeline/data/tract_scores.json ../data-pipeline/data/tracts_ca.geojson public/data/"
+  },
+  "dependencies": {
+    "next": "^14.2.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "maplibre-gl": "^4.7.1",
+    "@turf/bbox": "^7.1.0",
+    "@turf/boolean-point-in-polygon": "^7.1.0",
+    "@turf/helpers": "^7.1.0"
+  },
+  "devDependencies": {
+    "@types/geojson": "^7946.0.14",
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "typescript": "^5.5.0"
+  }
+}
