@@ -22,9 +22,7 @@ const SUBCULTURES: Subculture[] = [
   { id: "married_gays", name: "Married gays", vibe: "literally any gay married couple. that's the whole thing." },
   { id: "bilingual_baddie", name: "Bilingual baddies", vibe: "she's bilingual, she has to work, and she's fine with it DAMN" },
   { id: "crumbl_cookie_couple", name: "Crumbl cookie couple", vibe: "newlywed homeowners with a peace lily, a Tesla, and a Bachelor in Paradise watch-party tradition" },
-  { id: "wino", name: "Winos", vibe: "their oldest is in college, the wine fridge is full, the dog is large, the SUV is paid off" },
   { id: "hill_people", name: "Toothless hill people", vibe: "acid-dropping libertarian racists with more guns than teeth" },
-  { id: "stupid_guy", name: "Stupid guys", vibe: "this guy doesn't even know how stupid he is. he's going nowhere." },
 ];
 
 export default function Home() {
