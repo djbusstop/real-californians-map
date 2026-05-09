@@ -11,7 +11,6 @@ interface Props {
   geojson: GeoJSON.FeatureCollection;
   scores: Scores;
   selectedIds: string[];
-  isMobile?: boolean;
 }
 
 // Geometry code property keys, in order of preference. First three are tract
@@ -37,10 +36,7 @@ function colorMatchExpression(): maplibregl.ExpressionSpecification {
   return args as unknown as maplibregl.ExpressionSpecification;
 }
 
-export default function MapView({ geojson, scores, selectedIds, isMobile = false }: Props) {
-  // Mobile screens get a uniform size bump so dots stay readable at default
-  // zoom levels where mobile users tend to spend more time.
-  const SIZE_SCALE = isMobile ? 1.4 : 1.0;
+export default function MapView({ geojson, scores, selectedIds }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MlMap | null>(null);
   const beforeIdRef = useRef<string | undefined>(undefined);
@@ -115,12 +111,12 @@ export default function MapView({ geojson, scores, selectedIds, isMobile = false
               "interpolate",
               ["exponential", 1.6],
               ["zoom"],
-              4, 1.0 * SIZE_SCALE,
-              6, 1.5 * SIZE_SCALE,
-              8, 2.2 * SIZE_SCALE,
-              10, 4.0 * SIZE_SCALE,
-              13, 8.0 * SIZE_SCALE,
-              16, 13.0 * SIZE_SCALE,
+              4, 1.0,
+              6, 1.5,
+              8, 2.2,
+              10, 4.0,
+              13, 8.0,
+              16, 13.0,
             ],
             "circle-color": colorMatchExpression(),
             "circle-opacity": [
@@ -160,29 +156,6 @@ export default function MapView({ geojson, scores, selectedIds, isMobile = false
     else map.once("load", apply);
   }, [dots]);
 
-  // When the viewport crosses the mobile breakpoint, update the circle-radius
-  // paint expression in place so the size scale takes effect without
-  // re-initializing the map.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    const apply = () => {
-      if (!map.getLayer("dots-circle")) return;
-      map.setPaintProperty("dots-circle", "circle-radius", [
-        "interpolate",
-        ["exponential", 1.6],
-        ["zoom"],
-        4, 1.0 * SIZE_SCALE,
-        6, 1.5 * SIZE_SCALE,
-        8, 2.2 * SIZE_SCALE,
-        10, 4.0 * SIZE_SCALE,
-        13, 8.0 * SIZE_SCALE,
-        16, 13.0 * SIZE_SCALE,
-      ] as maplibregl.ExpressionSpecification);
-    };
-    if (map.isStyleLoaded()) apply();
-    else map.once("load", apply);
-  }, [SIZE_SCALE]);
 
 
 
