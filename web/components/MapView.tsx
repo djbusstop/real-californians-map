@@ -19,12 +19,13 @@ const PUMA_CODE_KEYS = ["GEOID", "GEOID20", "GEOIDFQ", "PUMACE20", "PUMA20", "PU
 
 // One dot per N units of weighted score, applied uniformly across subcultures.
 // Smaller subcultures genuinely show as fewer dots — that's the honest picture.
-const DOTS_PER_UNIT = 150;
+const DOTS_PER_UNIT = 100;
 
 const BASEMAP_STYLE = "https://tiles.openfreemap.org/styles/positron";
 
 const COLORS: Record<string, string> = {
   queer_leftist: "#2563eb",
+  married_gays: "#d946ef",
   bilingual_baddie: "#f97316",
   crumbl_cookie_couple: "#ec4899",
   wino: "#722f37",

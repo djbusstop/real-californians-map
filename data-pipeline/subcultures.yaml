@@ -15,65 +15,97 @@ subcultures:
 
   - id: queer_leftist
     name: Queer leftist
-    vibe: 15-40, BA+, urban renter in apartment, no car, transit/walk/bike/WFH, fancy occupation, recently moved
-    tract_marginal: B11009_004E   # female same-sex unmarried-partner households per tract (queer-coded geography)
+    vibe: 18-40, BA+, has a laptop, recently moved, urban-coded, partnered, no kids, fancy occupation, tends to take transit or work from home
+    tract_marginal: B11009_004E   # female same-sex unmarried-partner households per tract
     vector:
-      # Hard gates
-      - { field: AGEP, op: range, value: [15, 40], weight: 1.5, required: true }
+      # ───── Hard gates ─────
+      - { field: AGEP, op: range, value: [18, 40], weight: 1.5, required: true }
       - { field: SCHL, op: gte, value: 21, weight: 1.5, required: true }                                # bachelor's or higher
-      - { field: HUPAOC, op: eq, value: 4, weight: 1.5 }                                                # no own children — strong soft signal
-      - { field: OCCP, op: occupation_soc_major, value: [11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 35, 39, 41, 43, 45, 49, 53], weight: 2 }
-        # excludes 33 protective, 37 cleaning, 47 construction, 51 production, 55 military — soft signal
+      - { field: LAPTOP, op: eq, value: 1, weight: 1.5, required: true }                                # has a laptop or desktop in the household
+      - { field: ESR, op: in, value: [1, 2, 3], weight: 1, required: true }                             # not retired (employed/unemployed only)
+      - { field: WKL, op: eq, value: 1, weight: 1, required: true }                                     # last worked within 12 months
+      - { field: MV, op: in, value: [1, 2, 3], weight: 1, required: true }                              # householder moved in within last 9 years (must)
 
-      # Strong soft signals (used to be gates, eased back to broaden the cohort)
-      - { field: SAME_SEX, op: eq, value: 1, weight: 4 }                                                # same-sex household — heavy weight, dominates scoring
-      - { field: ESR, op: in, value: [1, 2, 3], weight: 1 }                                             # employed or unemployed
-      - { field: COW, op: in, value: [1, 2, 3, 4, 5], weight: 1 }                                       # private / nonprofit / government employee
+      # ───── Identity / queer signal (heavy weight, dominates scoring) ─────
+      - { field: SAME_SEX, op: eq, value: 1, weight: 4 }
+      - { field: PARTNER, op: in, value: [1, 2], weight: 2 }                                            # has unmarried partner present (any sex)
       - { field: RELSHIPP, op: in, value: [20, 23, 24, 36], weight: 1.5 }                               # householder / same-sex spouse / partner / other nonrelative
 
-      # Boost for left-coded occupations: research, social services, academia, arts/media, healthcare
+      # ───── Recency of move (gentrifier-leaning) ─────
+      - { field: MV, op: eq, value: 1, weight: 2 }                                                      # within 12 months — strongest
+      - { field: MV, op: in, value: [1, 2], weight: 1.5 }                                               # within 4 years — strong
+      - { field: MIG, op: in, value: [2, 3, 4, 5], weight: 0.5 }                                        # not in same house a year ago
+
+      # ───── Family structure ─────
+      - { field: HUPAOC, op: eq, value: 4, weight: 1.5 }                                                # no own children
+      - { field: FER, op: eq, value: 2, weight: 0.5 }                                                   # didn't give birth in last 12 mo
+
+      # ───── Work / sectors ─────
+      - { field: OCCP, op: occupation_soc_major, value: [11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 35, 39, 41, 43, 45, 49, 53], weight: 2 }
+        # any non-blue-collar / non-military occupation
       - { field: OCCP, op: occupation_soc_major, value: [19, 21, 25, 27, 29], weight: 2 }
-
-      # Boost for left-coded industries: media, professional services, education, health/social, arts
+        # boost for left-coded occupations: research, social services, education/academia, arts/media, healthcare
+      - { field: OCCP, op: occupation_soc_major, value: [25, 19], weight: 1 }
+        # academia / education / research extra boost
       - { field: INDP, op: industry_naics, value: [51, 54, 61, 62, 71], weight: 1.5 }
-
-      # Workplace: nonprofit and government roles weighted up
+        # info/media, professional services, education, health/social, arts
+      - { field: INDP, op: industry_naics, value: [61], weight: 1 }
+        # education industry extra boost (academia)
+      - { field: COW, op: in, value: [1, 2, 3, 4, 5], weight: 1 }                                       # employee (any kind)
       - { field: COW, op: eq, value: 2, weight: 1.5 }                                                    # nonprofit
       - { field: COW, op: in, value: [3, 4, 5], weight: 1 }                                              # federal / state / local government
+      - { field: COW, op: in, value: [6, 7], weight: 0.5 }                                              # self-employed (possibly)
+      - { field: HINS1, op: eq, value: 1, weight: 1 }                                                   # employer-based health insurance
 
-      # Income (middle-low)
-      - { field: PINCP, op: range, value: [25000, 75000], weight: 1 }
-      - { field: WAGP, op: gte, value: 1, weight: 1 }                                                    # has wage income
+      # ───── Income ─────
+      - { field: PINCP, op: range, value: [25000, 150000], weight: 1 }                                  # earnings $25k-$150k
+      - { field: POVPIP, op: gte, value: 150, weight: 0.5 }                                             # not in too much poverty
+      - { field: WAGP, op: gte, value: 1, weight: 0.5 }                                                  # has wage income
 
-      # Lifestyle / commute
+      # ───── Commute ─────
       - { field: JWTRNS, op: in, value: [3, 4, 5, 6, 7, 11, 12, 14], weight: 1.5 }                       # transit / walk / bike / WFH
-      - { field: VEH, op: eq, value: 0, weight: 2 }                                                      # no vehicles — strong soft signal
+      - { field: JWTRNS, op: eq, value: 14, weight: 1 }                                                 # works from home extra
+      - { field: VEH, op: eq, value: 0, weight: 2 }                                                      # no vehicles
+      - { field: VEH, op: lte, value: 1, weight: 1 }                                                     # 0 or 1 vehicle (still may drive)
 
-      # Housing
-      - { field: TEN, op: in, value: [3], weight: 1 }                                                    # rented
-      - { field: BLD, op: in, value: [4, 5, 6, 7, 8, 9], weight: 3 }                                     # multi-unit apartment — heavy weight to bias urban
-      - { field: MV, op: in, value: [1, 2], weight: 1 }                                                  # moved in within last 5 years
-      - { field: HHT, op: in, value: [5, 7], weight: 0.5 }                                               # shared nonfamily household perk
+      # ───── Housing ─────
+      - { field: BLD, op: in, value: [4, 5, 6, 7, 8, 9], weight: 3 }                                     # multi-unit apartment (strong, not required)
+      - { field: BLD, op: in, value: [7, 8, 9], weight: 1 }                                              # 10+ unit building extra
+      - { field: TEN, op: eq, value: 3, weight: 1.5 }                                                    # renter
+      - { field: TEN, op: eq, value: 1, weight: 0.5 }                                                    # new owner with mortgage (also fits)
+      - { field: HHT, op: in, value: [5, 7], weight: 0.5 }                                               # shared nonfamily household
 
-      # Person flags
-      - { field: DIS, op: eq, value: 1, weight: 1 }                                                      # disability helps (boosted)
-      - { field: MIG, op: in, value: [2, 3, 4, 5], weight: 0.5 }                                          # didn't live in same place 1 yr ago
-      - { field: FER, op: eq, value: 2, weight: 0.5 }                                                    # didn't give birth helps
-      - { field: SCH, op: in, value: [2, 3], weight: 1.5 }                                                # currently in school (boosted)
+      # ───── Person flags ─────
+      - { field: DIS, op: eq, value: 1, weight: 1 }                                                      # any disability
+      - { field: DREM, op: eq, value: 1, weight: 0.5 }                                                   # cognitive / mental-health difficulty (light bonus)
+      - { field: SCH, op: in, value: [2, 3], weight: 1.5 }                                               # currently in school
 
-      # Identity / diversity (note: re-introduces race weighting for this subculture only)
+      # ───── Identity / diversity (re-introduces race weighting for this subculture only) ─────
       - { field: RAC1P, op: in, value: [2, 3, 4, 5, 6, 7, 8, 9], weight: 1 }                              # non-white identity
       - { field: HISP, op: gte, value: 2, weight: 0.5 }                                                   # Hispanic origin
     proxy_gap: |
-      "Leftist" is still inferred from urban + queer + fancy-occupation correlation, not measured.
-      Single LGBTQ people remain invisible in the SAME_SEX household proxy. Several signals
-      (FER, SCH) only apply to specific subsets but are weighted lightly so non-applicability
-      doesn't penalize.
+      "Leftist" is inferred from urban + queer + helping-profession correlation, not measured.
+      Single LGBTQ people remain invisible in the SAME_SEX household proxy. DREM is the closest
+      census proxy for cognitive / mental-health difficulty and is weighted lightly so absence
+      doesn't penalize. Politics, religious affiliation, and consumption patterns aren't capturable.
+
+  - id: married_gays
+    name: Married gays
+    vibe: married, same-sex, of any description
+    tract_marginal: B11009_002E   # male same-sex unmarried-partner households per tract (gay-coded geography)
+    vector:
+      - { field: SAME_SEX, op: eq, value: 1, weight: 2, required: true }                                # same-sex household
+      - { field: MAR, op: eq, value: 1, weight: 2, required: true }                                     # married
+      - { field: AGEP, op: gte, value: 18, weight: 0.5 }                                                # adult
+    proxy_gap: |
+      Captures same-sex married couples. PUMS classifies same-sex married spouses via RELSHIPP=23,
+      which is what SAME_SEX is derived from. Doesn't distinguish lesbian from gay-male couples in
+      the score, though the tract marginal biases dot placement toward gay-male-coded enclaves.
 
   - id: crumbl_cookie_couple
     name: Crumbl cookie couple
     vibe: just a normal married couple, new homeowners, two cars, Taylor Swift and golf, boring in a comforting way
-    tract_marginal: B25032_009E   # owner-occupied 1-unit detached housing units per tract
+    tract_marginal: B11003_002E   # married-couple family households per tract (broader than detached-only, distributes dots more evenly)
     vector:
       # Hard gates
       - { field: AGEP, op: range, value: [24, 38], weight: 2, required: true }
@@ -81,7 +113,7 @@ subcultures:
       - { field: ESR, op: in, value: [1, 2], weight: 1.5, required: true }                              # employed
       - { field: RELSHIPP, op: in, value: [20, 21, 22, 23, 24], weight: 1, required: true }             # householder or spouse / partner
       - { field: JWTRNS, op: in, value: [1, 2], weight: 2, required: true }                             # drove (alone or carpool) — always
-      - { field: TEN, op: eq, value: 1, weight: 2, required: true }                                     # owned with mortgage (new homeowner)
+      - { field: TEN, op: eq, value: 1, weight: 2 }                                                    # owned with mortgage (strong soft, not required)
 
       # Couple structure (married OR cohabiting partners both fit)
       - { field: MAR, op: eq, value: 1, weight: 1.5 }                                                    # married helps
@@ -198,7 +230,7 @@ subcultures:
 
   - id: hill_people
     name: Toothless hill people
-    vibe: rural, low-educated, lives on a few acres, low income, often on Social Security or SSI, wood or propane heat, isolated
+    vibe: acid-dropping libertarian racists with more guns than teeth. they own the weed farms.
     tract_marginal: B25024_002E   # mobile home unit count per tract — biases toward rural tracts
     vector:
       # Hard gates

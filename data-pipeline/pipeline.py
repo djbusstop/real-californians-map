@@ -82,7 +82,10 @@ PERSON_VARS = [
     "SSP",        # Social Security income
     "SSIP",       # Supplemental Security Income
     "DPHY",       # ambulatory (mobility) difficulty (1 yes, 2 no)
+    "DREM",       # cognitive difficulty incl. mental health (1 yes, 2 no)
     "PUBCOV",     # any public health insurance (1 yes, 2 no)
+    "HINS1",      # employer-based health insurance (1 yes, 2 no)
+    "WKL",        # when last worked (1 within 12 mo, 2 1-5 yrs ago, 3 5+ yrs ago, 4 never)
 ]
 
 # Household-record variables (acs5/pums "housing" file).
@@ -107,6 +110,7 @@ HOUSING_VARS = [
     "PLM",        # complete plumbing facilities (1 yes, 2 no)
     "LAPTOP",     # laptop or desktop in household (1 yes, 2 no)
     "FS",         # food stamps received in last year (1 yes, 2 no)
+    "PARTNER",    # presence of unmarried partner (0 NA, 1 opp-sex, 2 same-sex, 3 no partner)
     "MULTG",      # multigenerational household
     "HUPAOC",     # presence of own children
     "HHLDRRAC1P", # householder race (diagnostic)

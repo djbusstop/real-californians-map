@@ -18,10 +18,11 @@ const EMPTY_FC: GeoJSON.FeatureCollection = { type: "FeatureCollection", feature
 
 const SUBCULTURES: Subculture[] = [
   { id: "queer_leftist", name: "Queer leftist", vibe: "urban, partnered, helping profession, transit/walk/bike" },
+  { id: "married_gays", name: "Married gays", vibe: "married, same-sex, of any description" },
   { id: "bilingual_baddie", name: "Bilingual baddies", vibe: "she's bilingual, she has to work, and she's fine with it DAMN" },
   { id: "crumbl_cookie_couple", name: "Crumbl cookie couple", vibe: "just a normal married couple, new homeowners, two cars, Taylor Swift and golf" },
   { id: "wino", name: "Winos", vibe: "50-75 business-owner homeowner, multiple cars, teen kids around, grills and chills" },
-  { id: "hill_people", name: "Toothless hill people", vibe: "rural, low-educated, lives on land, low income, wood-heated, isolated" },
+  { id: "hill_people", name: "Toothless hill people", vibe: "acid-dropping libertarian racists with more guns than teeth. they own the weed farms." },
   { id: "stupid_guy", name: "Stupid guys", vibe: "no diploma, gas station/cashier work, never married, trailer or parents' house" },
 ];
 

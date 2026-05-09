@@ -4,6 +4,7 @@ import type { Scores, Subculture } from "@/app/page";
 
 const COLORS: Record<string, string> = {
   queer_leftist: "#2563eb",
+  married_gays: "#d946ef",
   bilingual_baddie: "#f97316",
   crumbl_cookie_couple: "#ec4899",
   wino: "#722f37",
