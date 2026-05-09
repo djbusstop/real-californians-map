@@ -28,7 +28,9 @@ const SUBCULTURES: Subculture[] = [
 export default function Home() {
   const [scores, setScores] = useState<Scores | null>(null);
   const [pumaGeo, setPumaGeo] = useState<GeoJSON.FeatureCollection | null>(null);
-  const [selected, setSelected] = useState<string[]>(["queer_leftist"]);
+  const [selected, setSelected] = useState<string[]>(() =>
+    SUBCULTURES.map((s) => s.id)
+  );
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {

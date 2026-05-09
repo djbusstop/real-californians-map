@@ -1,6 +1,8 @@
 # Available demographic fields (ACS PUMS)
 
-Every PUMS variable that can be pulled into the pipeline and used in a subculture vector. Some are already pulled in `pipeline.py`; others are listed for reference and can be added to `PERSON_VARS` or `HOUSING_VARS` when needed. Codes shown are summarized; full code lists are in the official PUMS data dictionary.
+Every PUMS variable that can be pulled into the pipeline and used in a subculture vector. Some are already pulled in `pipeline.py`; others are listed for reference and can be added to `PERSON_VARS` or `HOUSING_VARS` when needed. Codes shown here are summarized.
+
+**Official source for the full code lists, value definitions, and any caveats:** [Census Bureau PUMS documentation](https://www.census.gov/programs-surveys/acs/microdata/documentation.html). Refer to that for authoritative values whenever a field's behavior is in doubt.
 
 ---
 

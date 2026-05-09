@@ -28,7 +28,7 @@ const COLORS: Record<string, string> = {
   bilingual_baddie: "#f97316",
   crumbl_cookie_couple: "#ec4899",
   wino: "#722f37",
-  hill_people: "#6b6e1f",
+  hill_people: "#355E3B",
   stupid_guy: "#8b6f47",
 };
 
@@ -51,6 +51,8 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
   const beforeIdRef = useRef<string | undefined>(undefined);
 
   // Generate dots for all selected subcultures, each tagged with its subculture id.
+  // Shuffle the combined feature array (Fisher-Yates) so that paint order is random
+  // across subcultures: no single subculture sits consistently on top.
   const dots = useMemo(() => {
     const all: GeoJSON.FeatureCollection = {
       type: "FeatureCollection",
@@ -62,6 +64,10 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
         f.properties = { ...(f.properties ?? {}), subculture: id };
         all.features.push(f);
       }
+    }
+    for (let i = all.features.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [all.features[i], all.features[j]] = [all.features[j], all.features[i]];
     }
     return all;
   }, [geojson, scores, selectedIds]);
@@ -126,10 +132,10 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
               "interpolate",
               ["linear"],
               ["zoom"],
-              4, 0.18,
-              6, 0.32,
-              8, 0.5,
-              11, 0.65,
+              4, 0.25,
+              6, 0.4,
+              8, 0.6,
+              11, 0.7,
             ],
             "circle-blur": 0.2,
             "circle-pitch-alignment": "map",

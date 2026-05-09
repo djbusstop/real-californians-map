@@ -154,42 +154,47 @@ subcultures:
 
   - id: wino
     name: Winos
-    vibe: 50-75 boomer-ish, owns the house, business owner, multiple cars, kids still around, trader joes lifestyle, grills and chills
-    tract_marginal: B19001_017E   # households earning $200k+ (proxy for affluent often-coastal)
+    vibe: 50-75, owns a place on some land in wine country, business owner or semi-retired, two cars, grills and chills
+    tract_marginal: B25075_022E   # owner-occupied homes valued $1M–$1.5M per tract (wine country mid-tier values)
     vector:
       # Hard gates
       - { field: AGEP, op: range, value: [50, 75], weight: 2, required: true }                          # boomer-ish age
       - { field: TEN, op: in, value: [1, 2], weight: 2, required: true }                                # owns home
 
+      # Wine country: lives on land
+      - { field: ACR, op: gte, value: 2, weight: 1.5 }                                                  # 1+ acres
+      - { field: ACR, op: eq, value: 3, weight: 1 }                                                     # 10+ acres extra
+      - { field: BLD, op: in, value: [2, 3], weight: 1.5 }                                              # single-family
+
       # Wealth flavor (comfortable, not top 1%)
       - { field: HINCP, op: range, value: [100000, 350000], weight: 1.5 }                               # comfortable but not crazy high
-      - { field: VALP, op: gte, value: 600000, weight: 1.5 }                                            # nice place worth doing up
+      - { field: VALP, op: gte, value: 750000, weight: 1.5 }                                            # nice place worth doing up
       - { field: POVPIP, op: gte, value: 350, weight: 1 }                                               # well above poverty line
 
       # Lifestyle / cars
       - { field: VEH, op: gte, value: 2, weight: 1.5 }                                                  # multiple cars
-      - { field: BDSP, op: gte, value: 3, weight: 0.5 }                                                  # decent size house
+      - { field: BDSP, op: gte, value: 3, weight: 0.5 }                                                 # decent size house
 
-      # Business owner flavor
+      # Business owner / semi-retired
       - { field: COW, op: in, value: [6, 7], weight: 1.5 }                                              # self-employed (owns a business)
       - { field: ESR, op: in, value: [1, 2, 6], weight: 1 }                                             # employed or not in labor force
+      - { field: WKHP, op: lte, value: 35, weight: 0.5 }                                                # part-time / semi-retired
 
-      # Household structure
+      # Wine country occupation soft signal
+      - { field: INDP, op: industry_naics, value: [11], weight: 1 }                                     # agriculture industry (winemakers, growers)
+
+      # Household structure (empty nesters welcome)
       - { field: MAR, op: eq, value: 1, weight: 1 }                                                     # married helps
       - { field: HHT, op: eq, value: 1, weight: 1 }                                                     # married couple household
-      - { field: HUPAOC, op: in, value: [1, 2, 3], weight: 1 }                                          # has kids at home (any age)
-      - { field: HUPAOC, op: eq, value: 3, weight: 1 }                                                  # teen kids (6-17 only) extra
-      - { field: BLD, op: in, value: [2, 3], weight: 1.5 }                                              # single-family
 
       # Stability
       - { field: MIG, op: eq, value: 1, weight: 1 }                                                     # lived in same place 1 year ago (didn't move)
-      - { field: FER, op: eq, value: 2, weight: 0.5 }                                                   # no baby in last year
       - { field: MV, op: gte, value: 3, weight: 1 }                                                     # moved in 5+ years ago (settled)
     proxy_gap: |
       Census can't measure wine consumption, Trader Joe's loyalty, or "grills and chills" lifestyle.
-      We're capturing the structural fingerprint: comfortable boomer-ish business-owning homeowner
-      with kids at home and stability — the demographic shape that wraps around the cultural archetype.
-      Politics not measured (none of the variables here lean R or D).
+      We're capturing the structural fingerprint: comfortable older homeowner on some land with
+      stability and self-employment / part-time work — the demographic shape that wraps around the
+      wine-country archetype. Politics not measured.
 
   - id: hill_people
     name: Toothless hill people

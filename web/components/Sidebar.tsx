@@ -7,7 +7,7 @@ const COLORS: Record<string, string> = {
   bilingual_baddie: "#f97316",
   crumbl_cookie_couple: "#ec4899",
   wino: "#722f37",
-  hill_people: "#6b6e1f",
+  hill_people: "#355E3B",
   stupid_guy: "#8b6f47",
 };
 
@@ -18,7 +18,12 @@ interface Props {
   scores: Scores | null;
 }
 
-export default function Sidebar({ subcultures, selected, onToggle, scores }: Props) {
+export default function Sidebar({
+  subcultures,
+  selected,
+  onToggle,
+  scores,
+}: Props) {
   const stats = scores
     ? subcultures.map((s) => {
         let total = 0;
@@ -39,13 +44,15 @@ export default function Sidebar({ subcultures, selected, onToggle, scores }: Pro
         color: "#1a1f2e",
       }}
     >
-      <h1 style={{ margin: "0 0 12px", lineHeight: 1.05, width: "max-content" }}>
+      <h1
+        style={{ margin: "0 0 12px", lineHeight: 1.05, width: "max-content" }}
+      >
         <span
           style={{
             display: "block",
             fontSize: 11,
             fontWeight: 600,
-            color: "#075985", /* darker California sky blue */
+            color: "#075985" /* darker California sky blue */,
             textTransform: "uppercase",
             letterSpacing: 2,
           }}
@@ -59,7 +66,7 @@ export default function Sidebar({ subcultures, selected, onToggle, scores }: Pro
             fontSize: 30,
             fontWeight: 700,
             letterSpacing: -0.5,
-            color: "#FB8500", /* California poppy orange */
+            color: "#FB8500" /* California poppy orange */,
             margin: "2px 0",
           }}
         >
@@ -70,7 +77,7 @@ export default function Sidebar({ subcultures, selected, onToggle, scores }: Pro
             display: "block",
             fontSize: 11,
             fontWeight: 600,
-            color: "#15803D", /* darker California green */
+            color: "#15803D" /* darker California green */,
             textTransform: "uppercase",
             letterSpacing: 2,
             textAlign: "right",
@@ -79,9 +86,7 @@ export default function Sidebar({ subcultures, selected, onToggle, scores }: Pro
           live
         </span>
       </h1>
-      <p style={{ color: "#4b5563", fontSize: 12, margin: "0 0 8px" }}>
-        Subculture proxies on CA tracts. Toggle multiple to overlay.
-      </p>
+
       <p style={{ color: "#6b7280", fontSize: 11, margin: "0 0 20px" }}>
         {selected.length} selected
         {selected.length > 0 && (
