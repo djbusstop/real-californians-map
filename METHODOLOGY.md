@@ -198,6 +198,18 @@ Dot counts are proportional to the underlying tract-level score within a single 
 
 ## Limitations
 
+### Sources of uncertainty (overview)
+
+The dot placement on the map carries uncertainty from three stacked decisions, in roughly decreasing order of magnitude:
+
+1. **The trait vector that defines each cohort.** This is the largest source of uncertainty and is irreducibly subjective. No statistical machinery can determine "what counts as a queer leftist" from data alone; the trait vector is an editorial operationalization of a cultural archetype. The per-cohort proxy-gap notes in `subcultures.yaml` document what the trait vector cannot capture.
+
+2. **The choice of tract-level marginal variables.** Marginals are selected manually based on judgment about correlation with the cohort's expected geography, then constrained by what the Census Bureau publishes at tract level. Some natural choices (Table B16001 detailed-language, Table B11009 same-sex partner) are suppressed at the tract level and we substitute alternatives. Sensitivity to this selection is not formally characterized.
+
+3. **The statistical estimation method (Fay-Herriot + ridge + NNLS + bootstrap + Conley).** This is the most heavily documented component below, but contributes the least uncertainty to actual dot placement. It primarily affects inferential statements about regression coefficients (whether they are well-identified), not where the dots appear on the map. Where a cohort lives is determined by the trait vector and chosen marginals; the statistical method only refines how dots scatter within each PUMA.
+
+A reviewer's leverage on improving the map's accuracy is therefore highest at (1), moderate at (2), and lowest at (3). The remainder of this section addresses each of these and other limitations in detail.
+
 **Trait vectors are correlate-based, not direct measurements.** Cultural attributes are not directly observable in census data; the vectors describe demographic, occupational, and behavioral correlates. Two cohorts with overlapping correlate profiles will produce similar geographic distributions even if the underlying cultural attributes differ.
 
 **Several attributes are absent from census data.** Gender identity, sexual orientation beyond same-sex household composition, religion, political affiliation, and consumption preferences are not collected by the ACS. Cohorts whose defining attributes fall into these categories rely on correlated proxies; the proxy-gap notes record this per cohort.
@@ -206,7 +218,17 @@ Dot counts are proportional to the underlying tract-level score within a single 
 
 **Soft scoring produces fractional matches.** Because conditions contribute fractionally to scores, individuals may partially match multiple cohort vectors. Sums of weighted scores across all cohorts therefore can exceed actual population, and absolute scores should not be read as head counts.
 
-**Tract-level estimates inherit marginal bias.** Each cohort's tract-level distribution is only as accurate as the correlation between the chosen marginals and the unobserved true cohort distribution.
+**Tract-level marginals are selected by judgment, not by automated procedure.** Each cohort's marginals are picked by the configurer based on intuition about correlation with the cohort's geography. We do not run lasso, forward/backward stepwise selection, or model-comparison metrics (AIC, BIC, AICc) to choose variables; those tools would only refine which already-chosen variables stay in the model. The decision of which variables to consider in the first place is editorial. This carries several specific risks:
+
+- *Confirmation bias.* If a marginal is selected because the configurer expects it to predict the cohort's geography, the resulting dot placement will reflect that prior. The R² and LOOCV R² metrics measure how well the chosen marginals jointly predict each PUMA's direct estimate; neither validates that the chosen marginals are externally correct.
+
+- *Census availability constraint.* Marginals are bounded by what the Census publishes at tract level. Conceptually cleaner variables (Table B16001 detailed-language, Table B11009 same-sex partner) are tract-suppressed; we substitute broader categories (Table C16001 collapsed-language, Table B11001 nonfamily households), which lose specificity. Substitutions are documented per cohort.
+
+- *Multicollinearity-driven dropout.* Tract-level count predictors at PUMA scale typically correlate strongly with PUMA population. NNLS+Ridge will zero a predictor when its variation is largely explained by population. A coefficient of zero should be read as "this predictor adds no information beyond what others already capture," not "this predictor is irrelevant to the cohort." VIF values are reported per coefficient so this can be interpreted directly.
+
+- *Sensitivity not formally characterized.* Adding or removing a single marginal can change LOOCV R² substantially. For example, the bilingual_baddie cohort moved from LOOCV R² ≈ 0.64 to ≈ 0.74 simply by swapping the tract-suppressed Table B16001 (which returned all zeros at tract level) for the published Table C16001. We have not quantified per-cohort sensitivity to marginal-set perturbation; a leave-one-marginal-out R² delta would be a natural extension.
+
+- *No external validation.* The pipeline produces estimates without comparison to independent ground truth (Williams Institute LGBTQ population estimates, Pew language statistics, county-level voter registration totals). Each cohort's tract-level distribution is therefore as accurate as the correlation between the chosen marginals and the unobserved true cohort geography; we have no external check on that correlation. External validation is the single highest-leverage methodological improvement available beyond the current state.
 
 **PUMS is a 1% sample.** Sampling weights are used throughout. Per-PUMA sampling variances of the cohort estimates are computed from the 80 successive-difference replicate weights and propagated into the small-area estimation step via the Fay-Herriot EBLUP. PUMAs with very few matching cohort records have large σ²_e_p and shrink heavily toward the regression line; PUMAs with many records preserve their direct estimate. The shrinkage factors γ_p are reported per cohort.
 
