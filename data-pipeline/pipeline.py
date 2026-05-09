@@ -490,53 +490,247 @@ def fetch_tracts_geojson() -> dict:
     return geojson
 
 
+def parse_marginal_specs(sub: dict) -> list[tuple[str, float]]:
+    """Return [(variable, weight), ...] from a cohort YAML record.
+    Supports both `tract_marginal: VAR` (single, weight 1.0) and
+    `tract_marginals: [{var: VAR, weight: W}, ...]` (multi)."""
+    if "tract_marginals" in sub and sub["tract_marginals"]:
+        return [
+            (m["var"], float(m.get("weight", 1.0)))
+            for m in sub["tract_marginals"]
+        ]
+    if "tract_marginal" in sub and sub["tract_marginal"]:
+        return [(sub["tract_marginal"], 1.0)]
+    return []
+
+
+def _phase1_share_blend(
+    puma_score: float,
+    tract_geoids: list[str],
+    marginals_per_tract: dict[str, list[float]],
+    weights: list[float],
+) -> dict[str, float]:
+    """Phase 1 fallback: weighted convex combination of normalized marginal shares
+    within a PUMA. Each marginal proposes a tract distribution; we average them
+    using the cohort-specified weights. Robust to zeros and missing values.
+    Closed-form equivalent of IPF on a single-axis distribution problem."""
+    if puma_score <= 0 or not tract_geoids:
+        return {}
+    weight_total = sum(weights)
+    if weight_total <= 0:
+        return {t: puma_score / len(tract_geoids) for t in tract_geoids}
+
+    n_marg = len(weights)
+    sums = [0.0] * n_marg
+    for t in tract_geoids:
+        vals = marginals_per_tract.get(t, [0.0] * n_marg)
+        for i in range(n_marg):
+            sums[i] += vals[i]
+
+    out: dict[str, float] = {}
+    if all(s <= 0 for s in sums):
+        # Every marginal is zero across this PUMA; uniform fallback.
+        share = 1.0 / len(tract_geoids)
+        return {t: round(puma_score * share, 2) for t in tract_geoids}
+
+    for t in tract_geoids:
+        vals = marginals_per_tract.get(t, [0.0] * n_marg)
+        share = 0.0
+        used_weight = 0.0
+        for i in range(n_marg):
+            if sums[i] > 0:
+                share += weights[i] * (vals[i] / sums[i])
+                used_weight += weights[i]
+        if used_weight > 0:
+            share /= used_weight
+        out[t] = round(puma_score * share, 2)
+    return out
+
+
+def fit_area_level_model(
+    puma_scores: dict[str, float],
+    puma_pop: dict[str, float],
+    puma_marginals: list[dict[str, float]],
+    marginal_names: list[str],
+) -> dict | None:
+    """Phase 2: fit OLS PUMA_score(p) = β_pop·pop(p) + Σ β_k · M_k(p) + ε.
+
+    Returns coefficients and fit stats, or None if there isn't enough data
+    or the fit fails. Intercept is absorbed into the pop term so predictions
+    scale naturally to tract size.
+    """
+    import numpy as np
+
+    pumas = sorted(set(puma_scores) & set(puma_pop))
+    if len(pumas) < 8:
+        return None
+
+    rows = []
+    targets = []
+    for p in pumas:
+        pop_p = puma_pop[p]
+        if pop_p <= 0:
+            continue
+        row = [pop_p] + [m.get(p, 0.0) for m in puma_marginals]
+        rows.append(row)
+        targets.append(puma_scores[p])
+
+    if len(rows) < 8:
+        return None
+
+    X = np.asarray(rows, dtype=float)
+    y = np.asarray(targets, dtype=float)
+    try:
+        coefs, *_ = np.linalg.lstsq(X, y, rcond=None)
+    except np.linalg.LinAlgError:
+        return None
+
+    preds = X @ coefs
+    residuals = y - preds
+    ss_res = float(np.sum(residuals ** 2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+
+    return {
+        "n_pumas": len(rows),
+        "pop_coef": float(coefs[0]),
+        "marginal_coefs": [float(c) for c in coefs[1:]],
+        "marginal_names": marginal_names,
+        "r_squared": float(r_squared),
+        "residual_std": float(np.std(residuals)),
+    }
+
+
 def distribute_to_tracts(
     puma_scores: dict,
-    tract_marginals: dict,
+    tract_marginals_by_cohort: dict[str, list[dict[str, float]]],
+    cohort_marginal_weights: dict[str, list[float]],
+    cohort_marginal_names: dict[str, list[str]],
     tract_to_puma: dict,
-) -> dict:
-    """Small-area estimation: distribute PUMA-level subculture scores across tracts
-    using each subculture's tract-level marginal as the weight.
+    tract_pop: dict[str, float],
+) -> tuple[dict, dict]:
+    """Distribute PUMA-level cohort scores to tracts.
 
-    puma_scores: { puma_code: { sub_id: score } }
-    tract_marginals: { sub_id: { tract_geoid: marginal_value } }
-    tract_to_puma: { tract_geoid: puma_code }
+    Phase 2 (preferred): fit OLS per cohort, predict tract counts, rake within
+    each PUMA to preserve the source PUMA total.
 
-    Returns: { tract_geoid: { sub_id: score } }
+    Phase 1 (fallback when the regression doesn't fit): weighted convex
+    combination of normalized marginal shares, raked the same way.
+
+    Returns (tract_scores, model_summaries):
+      tract_scores: { tract_geoid: { sub_id: score } }
+      model_summaries: { sub_id: { method: "regression"|"share-blend",
+                                   pop_coef, marginal_coefs, r_squared, ... } }
     """
     from collections import defaultdict
 
-    # Group tracts under each PUMA.
     tracts_by_puma: dict[str, list[str]] = defaultdict(list)
     for tract_geoid, puma in tract_to_puma.items():
         tracts_by_puma[puma].append(tract_geoid)
 
-    # Collect all subculture ids.
+    # Collect all cohort ids.
     sub_ids: set[str] = set()
     for vals in puma_scores.values():
         sub_ids.update(vals.keys())
 
+    # PUMA population from tract pop summed via crosswalk.
+    puma_pop: dict[str, float] = defaultdict(float)
+    for tract_geoid, p in tract_to_puma.items():
+        puma_pop[p] += tract_pop.get(tract_geoid, 0.0)
+
     out: dict[str, dict[str, float]] = {}
+    summaries: dict[str, dict] = {}
+
     for sub_id in sub_ids:
-        marginals = tract_marginals.get(sub_id, {})
-        for puma, tract_geoids in tracts_by_puma.items():
-            puma_score = puma_scores.get(puma, {}).get(sub_id, 0)
-            if puma_score == 0:
-                continue
-            total_marg = sum(marginals.get(t, 0) for t in tract_geoids)
-            if total_marg <= 0:
-                # No marginal data for this PUMA's tracts → uniform spread.
-                share = 1.0 / len(tract_geoids) if tract_geoids else 0
+        marginals_list = tract_marginals_by_cohort.get(sub_id, [])
+        weights = cohort_marginal_weights.get(sub_id, [])
+        names = cohort_marginal_names.get(sub_id, [])
+        # PUMA-aggregated marginals (sum across tracts in each PUMA).
+        puma_marginals: list[dict[str, float]] = []
+        for marg in marginals_list:
+            agg: dict[str, float] = defaultdict(float)
+            for tract_geoid, val in marg.items():
+                puma = tract_to_puma.get(tract_geoid)
+                if puma is None:
+                    continue
+                agg[puma] += val
+            puma_marginals.append(dict(agg))
+
+        cohort_puma_scores = {p: vals.get(sub_id, 0.0) for p, vals in puma_scores.items()}
+
+        # ── Try Phase 2 (regression) ──
+        model = None
+        if marginals_list:
+            model = fit_area_level_model(
+                cohort_puma_scores, puma_pop, puma_marginals, names
+            )
+
+        used_method = "share-blend"  # default fallback
+        if model and model["r_squared"] >= 0.05:
+            used_method = "regression"
+
+        if used_method == "regression":
+            # Predict tract-level raw counts using fitted coefficients,
+            # then rake within each PUMA so sums match the PUMA score.
+            for puma, tract_geoids in tracts_by_puma.items():
+                puma_score = cohort_puma_scores.get(puma, 0.0)
+                if puma_score == 0:
+                    continue
+                raw: dict[str, float] = {}
                 for t in tract_geoids:
-                    out.setdefault(t, {})[sub_id] = round(puma_score * share, 2)
-            else:
-                for t in tract_geoids:
-                    m = marginals.get(t, 0)
-                    if m <= 0:
-                        continue
-                    share = m / total_marg
-                    out.setdefault(t, {})[sub_id] = round(puma_score * share, 2)
-    return out
+                    pred = model["pop_coef"] * tract_pop.get(t, 0.0)
+                    for i, marg in enumerate(marginals_list):
+                        pred += model["marginal_coefs"][i] * marg.get(t, 0.0)
+                    raw[t] = max(pred, 0.0)
+                raw_sum = sum(raw.values())
+                if raw_sum <= 0:
+                    # Model predicted nothing for this PUMA's tracts; uniform.
+                    share = 1.0 / len(tract_geoids) if tract_geoids else 0
+                    for t in tract_geoids:
+                        out.setdefault(t, {})[sub_id] = round(puma_score * share, 2)
+                else:
+                    factor = puma_score / raw_sum
+                    for t in tract_geoids:
+                        if raw[t] > 0:
+                            out.setdefault(t, {})[sub_id] = round(raw[t] * factor, 2)
+            summaries[sub_id] = {"method": "regression", **model}
+        else:
+            # Phase 1: weighted share-blend per PUMA.
+            # If no marginals are usable, distribute uniformly within each PUMA.
+            blend_weights = weights if weights else []
+            for puma, tract_geoids in tracts_by_puma.items():
+                puma_score = cohort_puma_scores.get(puma, 0.0)
+                if puma_score == 0:
+                    continue
+                if not blend_weights or not marginals_list:
+                    # No usable marginals — uniform fallback.
+                    share = 1.0 / len(tract_geoids) if tract_geoids else 0
+                    blended = {t: round(puma_score * share, 2) for t in tract_geoids}
+                else:
+                    marginals_per_tract: dict[str, list[float]] = {}
+                    for t in tract_geoids:
+                        marginals_per_tract[t] = [marg.get(t, 0.0) for marg in marginals_list]
+                    blended = _phase1_share_blend(
+                        puma_score, tract_geoids, marginals_per_tract, blend_weights
+                    )
+                for t, v in blended.items():
+                    if v > 0:
+                        out.setdefault(t, {})[sub_id] = v
+            summaries[sub_id] = {
+                "method": "share-blend",
+                "n_marginals": len(marginals_list),
+                "marginal_names": names,
+                "marginal_weights": weights,
+                "fallback_reason": (
+                    "no marginals declared"
+                    if not marginals_list
+                    else f"regression r_squared={model.get('r_squared'):.3f} below threshold"
+                    if model
+                    else "regression failed (insufficient PUMAs or singular matrix)"
+                ),
+            }
+
+    return out, summaries
 
 
 # ----------------------------------------------------------------------------
@@ -707,23 +901,60 @@ def main() -> None:
     crosswalk = fetch_tract_puma_crosswalk()
     tract_to_puma = dict(zip(crosswalk["tract_geoid"], crosswalk["puma"]))
 
-    # Pull each subculture's tract-level marginal from the ACS API.
-    tract_marginals: dict[str, dict[str, float]] = {}
-    for sub in subcultures:
-        var = sub.get("tract_marginal")
-        if not var:
-            print(f"[tract] {sub['id']}: no tract_marginal in YAML; skipping")
-            continue
-        try:
-            tract_marginals[sub["id"]] = fetch_acs_tract_marginal(var)
-        except Exception as e:
-            print(f"[tract] {sub['id']}: failed to fetch {var} ({e}); will fall back to uniform")
-            tract_marginals[sub["id"]] = {}
+    # Tract population — used as the size term in the regression.
+    print("[tract] fetching tract population (B01003_001E)...")
+    tract_pop = fetch_acs_tract_marginal("B01003_001E")
 
-    tract_scores = distribute_to_tracts(puma_scores, tract_marginals, tract_to_puma)
+    # For each cohort, pull every declared tract marginal.
+    tract_marginals_by_cohort: dict[str, list[dict[str, float]]] = {}
+    cohort_marginal_weights: dict[str, list[float]] = {}
+    cohort_marginal_names: dict[str, list[str]] = {}
+    for sub in subcultures:
+        specs = parse_marginal_specs(sub)
+        if not specs:
+            print(f"[tract] {sub['id']}: no tract marginals declared; will fall back to uniform")
+            tract_marginals_by_cohort[sub["id"]] = []
+            cohort_marginal_weights[sub["id"]] = []
+            cohort_marginal_names[sub["id"]] = []
+            continue
+        margs: list[dict[str, float]] = []
+        names: list[str] = []
+        weights: list[float] = []
+        for var, w in specs:
+            try:
+                margs.append(fetch_acs_tract_marginal(var))
+                names.append(var)
+                weights.append(w)
+            except Exception as e:
+                print(f"[tract] {sub['id']}: failed to fetch {var} ({e}); skipping this marginal")
+        tract_marginals_by_cohort[sub["id"]] = margs
+        cohort_marginal_weights[sub["id"]] = weights
+        cohort_marginal_names[sub["id"]] = names
+
+    tract_scores, model_summaries = distribute_to_tracts(
+        puma_scores,
+        tract_marginals_by_cohort,
+        cohort_marginal_weights,
+        cohort_marginal_names,
+        tract_to_puma,
+        tract_pop,
+    )
     out_tract_scores = DATA / "tract_scores.json"
     out_tract_scores.write_text(json.dumps(tract_scores))
     print(f"[save] {out_tract_scores} ({len(tract_scores):,} tracts)")
+
+    out_models = DATA / "model_summaries.json"
+    out_models.write_text(json.dumps(model_summaries, indent=2))
+    print(f"[save] {out_models}")
+    for sub_id, summary in model_summaries.items():
+        if summary["method"] == "regression":
+            print(
+                f"[model] {sub_id:25s} OLS  R²={summary['r_squared']:.3f} "
+                f"n={summary['n_pumas']} pop_coef={summary['pop_coef']:+.4f} "
+                f"marg_coefs={[round(c, 4) for c in summary['marginal_coefs']]}"
+            )
+        else:
+            print(f"[model] {sub_id:25s} share-blend ({summary.get('fallback_reason', '')})")
 
     fetch_tracts_geojson()
 

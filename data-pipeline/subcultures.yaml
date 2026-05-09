@@ -16,7 +16,11 @@ subcultures:
   - id: queer_leftist
     name: Queer leftist
     vibe: takes the bus to therapy. hates capitalism but isn't bad at it
-    tract_marginal: B11009_004E   # female same-sex unmarried-partner households per tract
+    # Multi-marginal: regression layer estimates per-marginal coefficients.
+    tract_marginals:
+      - { var: B11009_004E, weight: 1 }   # female same-sex unmarried-partner households
+      - { var: B11009_002E, weight: 1 }   # male same-sex unmarried-partner households
+      - { var: B25024_009E, weight: 0.5 } # housing units in 50+ unit structures (urban density signal)
     vector:
       # ───── Hard gates ─────
       - { field: AGEP, op: range, value: [18, 40], weight: 1.5, required: true }
@@ -92,7 +96,9 @@ subcultures:
   - id: married_gays
     name: Married gays
     vibe: literally any gay married couple. that's the whole thing.
-    tract_marginal: B11009_002E   # male same-sex unmarried-partner households per tract (gay-coded geography)
+    tract_marginals:
+      - { var: B11009_002E, weight: 1 }   # male same-sex unmarried-partner households
+      - { var: B11009_004E, weight: 1 }   # female same-sex unmarried-partner households
     vector:
       - { field: SAME_SEX, op: eq, value: 1, weight: 2, required: true }                                # same-sex household
       - { field: MAR, op: eq, value: 1, weight: 2, required: true }                                     # married
@@ -105,7 +111,10 @@ subcultures:
   - id: crumbl_cookie_couple
     name: Crumbl cookie couple
     vibe: newlywed homeowners with a peace lily, a Tesla, and a Bachelor in Paradise watch-party tradition
-    tract_marginal: B11003_002E   # married-couple family households per tract (broader than detached-only, distributes dots more evenly)
+    tract_marginals:
+      - { var: B11003_002E, weight: 1 }   # married-couple family households
+      - { var: B25024_002E, weight: 0.5 } # 1-unit detached structures (suburban housing)
+      - { var: B19001_016E, weight: 0.5 } # households earning $150k–$200k (their income band)
     vector:
       # Hard gates
       - { field: AGEP, op: range, value: [24, 38], weight: 2, required: true }
@@ -150,7 +159,13 @@ subcultures:
   - id: bilingual_baddie
     name: Bilingual baddies
     vibe: she's bilingual, she has to work, and she's fine with it DAMN
-    tract_marginal: B03002_012E   # total Hispanic / Latino population per tract — broader than Spanish-speakers, catches assimilated second-gen too
+    tract_marginals:
+      - { var: B03002_012E, weight: 1 }   # total Hispanic / Latino population (catches assimilated second-gen too)
+      - { var: B16001_003E, weight: 1 }   # speak Spanish at home
+      - { var: B16001_099E, weight: 0.5 } # Tagalog / Filipino (daly city, vallejo, west covina, san diego)
+      - { var: B16001_087E, weight: 0.5 } # Vietnamese (westminster, garden grove, east san jose)
+      - { var: B16001_054E, weight: 0.5 } # Punjabi (central valley, yuba city, fresno)
+      - { var: B16001_039E, weight: 0.5 } # Armenian (glendale, burbank)
     vector:
       # Hard gates
       - { field: SEX,  op: eq, value: 2, weight: 1.5, required: true }                                  # female
@@ -187,7 +202,10 @@ subcultures:
   - id: wino
     name: Winos
     vibe: their oldest is in college, the wine fridge is full, the dog is large, the SUV is paid off
-    tract_marginal: B25075_022E   # owner-occupied homes valued $1M–$1.5M per tract (wine country mid-tier values)
+    tract_marginals:
+      - { var: B25075_022E, weight: 1 }   # owner-occupied homes valued $1M–$1.5M (wine-country mid-tier)
+      - { var: B25024_002E, weight: 0.5 } # 1-unit detached structures (they own a real house)
+      - { var: B19001_017E, weight: 0.5 } # households earning $200k+ (comfortable enough to do it up)
     vector:
       # Hard gates
       - { field: AGEP, op: range, value: [50, 75], weight: 2, required: true }                          # boomer-ish age
@@ -231,7 +249,9 @@ subcultures:
   - id: hill_people
     name: Toothless hill people
     vibe: acid-dropping libertarian racists with more guns than teeth
-    tract_marginal: B25024_002E   # mobile home unit count per tract — biases toward rural tracts
+    tract_marginals:
+      - { var: B25024_010E, weight: 1 }   # mobile home unit count (rural marginal-housing signal)
+      - { var: B22002_002E, weight: 0.5 } # households receiving SNAP/food stamps (rural poverty signal)
     vector:
       # Hard gates
       - { field: AGEP, op: gte, value: 25, weight: 1, required: true }                                  # adult (excludes kids)
@@ -288,7 +308,10 @@ subcultures:
   - id: stupid_guy
     name: Stupid guys
     vibe: this guy doesn't even know how stupid he is. he's going nowhere.
-    tract_marginal: B25024_002E   # mobile home unit count per tract — biases dot placement toward rural tracts
+    tract_marginals:
+      - { var: B25024_010E, weight: 1 }   # mobile home unit count (rural marginal-housing signal)
+      - { var: B22002_002E, weight: 0.5 } # households receiving SNAP/food stamps
+      - { var: B01001_002E, weight: 0.5 } # male population (mild gender weighting)
     vector:
       # Hard gates (all required)
       - { field: SEX, op: eq, value: 1, weight: 1.5, required: true }                              # male

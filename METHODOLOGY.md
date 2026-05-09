@@ -66,20 +66,54 @@ The result is a weighted population estimate of the subculture's PUMA-level coho
 
 ## Geographic distribution (small-area estimation)
 
-PUMS is a PUMA-level dataset. To render the map at higher resolution than 281 large polygons, we redistribute each PUMA's score across the tracts inside it using a tract-level ACS marginal that correlates with the subculture.
+PUMS is a PUMA-level dataset. To render the map at higher resolution than 281 large polygons, we use a two-step area-level small-area-estimation procedure.
 
-For subculture *s* with tract marginal variable *m_s*, and PUMA *p* containing tracts *T(p)*:
+### Step 1 — Fit an area-level regression per cohort
+
+For each cohort *s*, we collect one or more tract-level ACS marginal variables `M_1(t), M_2(t), …, M_K(t)` declared in the configuration. Tract-level marginals are aggregated to PUMA totals by summing across the tracts of each PUMA. We also fetch tract population from ACS table B01003 and aggregate it to PUMA population.
+
+We then fit an ordinary least squares regression:
 
 ```
-share(t, s) = m_s(t) / sum over t' in T(p) of m_s(t')
-tract_score(t, s) = PUMA_score(p, s) × share(t, s)
+PUMA_score(p, s) = β_pop · pop(p) + Σ_k β_k · M_k(p) + ε_p
 ```
 
-If the marginal sum within a PUMA is zero (no tract in that PUMA has any of the marginal variable), the score is distributed uniformly across the PUMA's tracts as a fallback.
+The intercept is absorbed into the population term so predictions scale naturally with tract size. Coefficients are estimated by least squares on the ~280 PUMA observations available for California. Fit statistics (R², residual standard deviation, coefficient values) are written to `data/model_summaries.json` for transparency.
 
-This is a standard form of small-area estimation: the source distribution is observed at the PUMA level, and the estimate is downscaled to tracts using a covariate that correlates with the target distribution. The estimate inherits whatever bias the chosen marginal carries — for instance, a marginal of female same-sex unmarried-partner households downscales toward tracts with visible lesbian-couple households and under-represents single LGBTQ residents and gay-male-coded enclaves. Each cohort's marginal is documented in the configuration.
+### Step 2 — Predict tract scores and rake to PUMA totals
 
-Tract-level scores describe how the PUMA-level cohort estimate is distributed across the tracts of that PUMA, conditional on the chosen marginal. They are not direct counts of cohort membership at the tract level.
+For each tract *t* in PUMA *p*, the model predicts a raw tract count:
+
+```
+predicted(t) = β_pop · pop(t) + Σ_k β_k · M_k(t)
+```
+
+Negative predictions are clipped to zero. Within each PUMA, predicted tract counts are then *raked* (proportionally rescaled) so they sum to the PUMS-derived `PUMA_score(p, s)`:
+
+```
+tract_score(t, s) = predicted(t) · ( PUMA_score(p, s) / Σ_{t'∈T(p)} predicted(t') )
+```
+
+Raking ensures the tract-level estimates are internally consistent with the PUMA-level totals from PUMS — the cohort total inside any PUMA never exceeds what PUMS measured, regardless of model error.
+
+### Phase-1 fallback: weighted share-blend
+
+When the regression cannot fit (fewer than 8 PUMAs with valid data, singular design matrix, or `R² < 0.05`), the cohort falls back to a weighted convex combination of normalized marginal shares:
+
+```
+share(t, s) = Σ_k w_k · ( M_k(t) / Σ_{t'∈T(p)} M_k(t') )    [renormalized]
+tract_score(t, s) = PUMA_score(p, s) · share(t, s)
+```
+
+This is a closed-form equivalent of Iterative Proportional Fitting on a single-axis distribution problem with proportional constraints. If all marginals are zero across a PUMA, the score is distributed uniformly across the PUMA's tracts.
+
+`model_summaries.json` records which method was used per cohort and why.
+
+### Interpretation
+
+The estimate inherits whatever bias the chosen marginals collectively carry. Multi-marginal regression mitigates the bias of any single marginal — for instance, a queer-cohort estimate built only from female same-sex partner counts under-represents gay-male-coded geography, but adding male same-sex partner counts as an additional regressor lets the data speak. Coefficients and fit stats are saved per cohort so this trade-off is auditable.
+
+Tract-level scores describe how the PUMA-level cohort estimate is distributed across the tracts of that PUMA, conditional on the chosen marginals and the fitted relationship. They are not direct counts of cohort membership at the tract level.
 
 ## Visualization (dot density)
 
