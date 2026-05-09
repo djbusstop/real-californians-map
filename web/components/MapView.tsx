@@ -176,7 +176,7 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
       >
         {dots.features.length.toLocaleString()} dots ·{" "}
         {selectedIds.length} subculture{selectedIds.length === 1 ? "" : "s"} · 1 dot ≈{" "}
-        {DOTS_PER_UNIT.toLocaleString()} units
+        {DOTS_PER_UNIT.toLocaleString()} people
       </div>
     </div>
   );
