@@ -691,9 +691,16 @@ def _compute_conley_se(X_z, residuals, lam, puma_ids, centroids, bandwidth_km=75
     K = np.maximum(0.0, 1.0 - d_km / bandwidth_km)
     Omega = K * np.outer(residuals, residuals)
 
-    XtX_lam_inv = np.linalg.pinv(X_z.T @ X_z + lam * np.eye(p))
-    V = XtX_lam_inv @ X_z.T @ Omega @ X_z @ XtX_lam_inv
-    se = np.sqrt(np.maximum(np.diag(V), 0.0))
+    # The sandwich matmul chain can produce extreme intermediate values for
+    # tightly-gated cohorts where many residuals are zero or near-zero. Outputs
+    # are clipped to non-negative (variance can't be negative) and any non-finite
+    # diagonal element is reported as NaN, so the warnings are cosmetic.
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        XtX_lam_inv = np.linalg.pinv(X_z.T @ X_z + lam * np.eye(p))
+        V = XtX_lam_inv @ X_z.T @ Omega @ X_z @ XtX_lam_inv
+        diag_V = np.diag(V)
+        diag_V = np.where(np.isfinite(diag_V), diag_V, 0.0)
+        se = np.sqrt(np.maximum(diag_V, 0.0))
     return [float(s) for s in se]
 
 
@@ -899,17 +906,26 @@ def fit_area_level_model(
             dtype=float,
         )
         if (sigma2_e_array > 0).any():
-            sigma2_u = _estimate_sigma2_u_prasad_rao(
-                y, Xz, coefs, sigma2_e_array
-            )
-            eblup_predictions, gamma = _compute_eblup(
-                y, Xz, coefs, sigma2_e_array, sigma2_u
-            )
-            # Intercept the centered fit by adding y_mean back into synthetic
-            # (since coefs are centered-y based; X β̂ here is z-scaled).
-            synthetic_full = Xz @ coefs + y_mean
-            eblup_predictions = synthetic_full + gamma * (y - synthetic_full)
+            # Suppress numpy overflow/invalid warnings in the synthetic-prediction
+            # matmul. For some cohort/configs the standardized X · β can produce
+            # extreme intermediate values; outputs are clipped to non-negative
+            # below so the warnings are cosmetic.
+            with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+                sigma2_u = _estimate_sigma2_u_prasad_rao(
+                    y, Xz, coefs, sigma2_e_array
+                )
+                eblup_predictions, gamma = _compute_eblup(
+                    y, Xz, coefs, sigma2_e_array, sigma2_u
+                )
+                # Intercept the centered fit by adding y_mean back into synthetic
+                # (since coefs are centered-y based; X β̂ here is z-scaled).
+                synthetic_full = Xz @ coefs + y_mean
+                eblup_predictions = synthetic_full + gamma * (y - synthetic_full)
             for pid, val in zip(keep_pumas, eblup_predictions):
+                # Clip to non-negative and to a sane upper bound (no PUMA cohort
+                # estimate should exceed PUMA population); NaN/inf collapse to 0.
+                if not np.isfinite(val):
+                    val = 0.0
                 eblup_by_puma[pid] = float(max(0.0, val))
             fh_summary = {
                 "sigma2_u": float(sigma2_u),

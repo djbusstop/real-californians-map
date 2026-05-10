@@ -31,89 +31,88 @@ subcultures:
       - B25034_011E   # housing units built 1939 or earlier (pre-war / rent-controlled urban geography)
     vector:
       # ───── Hard gates ─────
-      - { field: AGEP, op: range, value: [22, 50], weight: 1.5, required: true }                        # broad working age (was 18-40, expanded — established queer leftists are older too)
-      - { field: SCHL, op: gte, value: 21, weight: 1.5, required: true }                                # bachelor's or higher
-      - { field: LAPTOP, op: eq, value: 1, weight: 1.5, required: true }                                # has a laptop or desktop in the household
-      - { field: ESR, op: in, value: [1, 2, 3], weight: 1, required: true }                             # not retired (employed/unemployed only)
-      - { field: WKL, op: eq, value: 1, weight: 1, required: true }                                     # last worked within 12 months
+      - { field: SAME_SEX, op: eq, value: 1, weight: 4, required: true }                                # queer (must be in a same-sex household)
+      - { field: AGEP, op: range, value: [18, 40], weight: 1.5, required: true }                        # 18-40
+      - { field: SCHL, op: gte, value: 19, weight: 1.5, required: true }                                # some college or higher (admits baristas, service workers)
+      - { field: SCHL, op: gte, value: 21, weight: 1 }                                                  # bachelor's+ (extra weight for the educated subset)
+      - { field: LAPTOP, op: eq, value: 1, weight: 1.5, required: true }                                # has a computer in the household
+      - { field: BROADBND, op: eq, value: 1, weight: 1, required: true }                                # has internet at home
+      - { field: ESR, op: in, value: [1, 2, 3], weight: 1, required: true }                             # not retired
+      - { field: WKL, op: in, value: [1, 2], weight: 1, required: true }                                # worked within 5 years (admits gap-year and between-jobs)
 
-      # ───── Identity / queer signal (now a hard gate — see proxy_gap) ─────
-      - { field: SAME_SEX, op: eq, value: 1, weight: 4, required: true }                                # MUST be in a same-sex household
-      - { field: PARTNER, op: eq, value: 2, weight: 2 }                                                 # same-sex unmarried partner present (extra)
-      - { field: RELSHIPP, op: in, value: [20, 23, 24, 36], weight: 1.5 }                               # householder / same-sex spouse / partner / other nonrelative
+      # ───── Mental-health / disability signal (heavy weight per editorial intent) ─────
+      - { field: DREM, op: eq, value: 1, weight: 3 }                                                    # cognitive / mental-health difficulty
+      - { field: DIS, op: eq, value: 1, weight: 1.5 }                                                   # any disability (supports DREM)
+      - { field: PUBCOV, op: eq, value: 1, weight: 0.5 }                                                # public health coverage (Medi-Cal — sometimes the case)
 
-      # ───── Settled, hardworking pattern (was "gentrifier-leaning", reversed per editorial intent) ─────
-      # The classic queer leftist has often been in the same rent-controlled apartment for many
-      # years — established, working full-time, not a recent gentrifier-arrival. Signals:
-      - { field: MIG, op: eq, value: 1, weight: 1 }                                                     # lived in same house a year ago (settled)
+      # ───── Health insurance (any) ─────
+      - { field: HINS1, op: eq, value: 1, weight: 1.5 }                                                 # employer-based health insurance
+
+      # ───── Family / household structure: single, no kids, flatshare ─────
+      - { field: MAR, op: in, value: [3, 4, 5], weight: 1.5 }                                           # not currently married (divorced / separated / never married)
+      - { field: MAR, op: eq, value: 5, weight: 0.5 }                                                   # never married (extra)
+      - { field: HUPAOC, op: eq, value: 4, weight: 1.5 }                                                # no own children present
+      - { field: FER, op: eq, value: 2, weight: 0.5 }                                                   # didn't give birth in last 12 mo
+      - { field: HHT, op: in, value: [5, 7], weight: 2 }                                                # nonfamily multi-person household (FLATSHARE)
+      - { field: RELSHIPP, op: in, value: [34, 35, 36], weight: 1.5 }                                   # housemate / roommate / unrelated nonpartner (FLATSHARE)
+      - { field: PARTNER, op: eq, value: 2, weight: 1 }                                                 # same-sex unmarried partner present
+
+      # ───── Occupation: creative / social service / education / government / food / STEM ─────
+      - { field: OCCP, op: occupation_soc_major, value: [27], weight: 2.5 }                             # arts / design / entertainment / sports / media (CREATIVE)
+      - { field: OCCP, op: occupation_soc_major, value: [21], weight: 2.5 }                             # community and social service
+      - { field: OCCP, op: occupation_soc_major, value: [25], weight: 2 }                               # education / training / library
+      - { field: OCCP, op: occupation_soc_major, value: [35], weight: 1.5 }                             # food preparation and serving (barista, server)
+      - { field: OCCP, op: occupation_soc_major, value: [15, 17], weight: 2 }                           # STEM: computer/math + architecture/engineering
+      - { field: OCCP, op: occupation_soc_major, value: [19, 29], weight: 1.5 }                         # life/physical/social science / healthcare practitioner
+      - { field: COW, op: eq, value: 2, weight: 2 }                                                     # nonprofit (queer-leftist signature workplace)
+      - { field: COW, op: in, value: [3, 4, 5], weight: 1.5 }                                           # federal / state / local government employee
+      - { field: COW, op: in, value: [1, 6, 7], weight: 0.5 }                                           # private wage / self-employed (acceptable but not the strongest signal)
+      - { field: INDP, op: industry_naics, value: [51, 54, 61, 62, 71, 72], weight: 1.5 }               # info / professional / education / healthcare / arts / accommodation-food
+
+      # ───── Commute: transit, no car, sometimes WFH ─────
+      - { field: VEH, op: eq, value: 0, weight: 2.5 }                                                   # no vehicles (TAKES THE BUS)
+      - { field: VEH, op: lte, value: 1, weight: 1 }                                                    # 0 or 1 vehicle
+      - { field: JWTRNS, op: in, value: [3, 4, 5, 6, 7, 11, 12], weight: 1.5 }                          # bus / streetcar / subway / rail / ferry / walk / bike
+      - { field: JWTRNS, op: eq, value: 14, weight: 1.5 }                                               # works from home (sometimes)
+
+      # ───── Income: middle (not poor, not rich) ─────
+      - { field: HINCP, op: range, value: [60000, 150000], weight: 1.5 }                                # household income middle
+      - { field: PINCP, op: range, value: [25000, 100000], weight: 1.5 }                                # personal income middle
+      - { field: HINCP, op: lte, value: 200000, weight: 0.5 }                                           # cap (not luxury household)
+      - { field: POVPIP, op: gte, value: 100, weight: 0.5 }                                             # at or above poverty line
+      - { field: WAGP, op: gte, value: 1, weight: 0.5 }                                                 # has wage income
+
+      # ───── Settled, hardworking pattern (anti-gentrifier) ─────
+      - { field: MIG, op: eq, value: 1, weight: 1 }                                                     # same house a year ago (settled)
       - { field: MV, op: gte, value: 3, weight: 1 }                                                     # moved in 5+ years ago (rooted)
-      - { field: MV, op: gte, value: 4, weight: 0.5 }                                                   # moved in 10+ years ago (long-tenured renter)
       - { field: WKHP, op: gte, value: 35, weight: 1.5 }                                                # full-time hours
       - { field: WKHP, op: gte, value: 40, weight: 0.5 }                                                # 40+ hours
 
-      # ───── Family structure ─────
-      - { field: HUPAOC, op: eq, value: 4, weight: 1.5 }                                                # no own children
-      - { field: FER, op: eq, value: 2, weight: 0.5 }                                                   # didn't give birth in last 12 mo
+      # ───── Housing: renter, multi-unit, older building ─────
+      - { field: TEN, op: eq, value: 3, weight: 2 }                                                    # renter
+      - { field: BLD, op: in, value: [4, 5, 6, 7, 8, 9], weight: 3 }                                    # multi-unit apartment
+      - { field: BLD, op: in, value: [4, 5, 6], weight: 1.5 }                                           # small/mid apartment buildings (2-9 units, NOT high-rise)
+      - { field: YBL, op: lte, value: 5, weight: 1.5 }                                                  # built before 1980
+      - { field: YBL, op: lte, value: 3, weight: 1 }                                                    # built before 1960
+      - { field: YBL, op: lte, value: 2, weight: 0.5 }                                                  # built before 1950 (pre-war)
+      - { field: BDSP, op: lte, value: 2, weight: 0.5 }                                                 # smaller unit (1-2 BR)
 
-      # ───── Work / sectors ─────
-      - { field: OCCP, op: occupation_soc_major, value: [11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 35, 39, 41, 43, 45, 49, 53], weight: 2 }
-        # any non-blue-collar / non-military occupation
-      - { field: OCCP, op: occupation_soc_major, value: [19, 21, 25, 27, 29], weight: 2 }
-        # boost for left-coded occupations: research, social services, education/academia, arts/media, healthcare
-      - { field: OCCP, op: occupation_soc_major, value: [25, 19], weight: 1 }
-        # academia / education / research extra boost
-      - { field: INDP, op: industry_naics, value: [51, 54, 61, 62, 71], weight: 1.5 }
-        # info/media, professional services, education, health/social, arts
-      - { field: INDP, op: industry_naics, value: [61], weight: 1 }
-        # education industry extra boost (academia)
-      - { field: COW, op: in, value: [1, 2, 3, 4, 5], weight: 1 }                                       # employee (any kind)
-      - { field: COW, op: eq, value: 2, weight: 1.5 }                                                    # nonprofit
-      - { field: COW, op: in, value: [3, 4, 5], weight: 1 }                                              # federal / state / local government
-      - { field: COW, op: in, value: [6, 7], weight: 0.5 }                                              # self-employed (possibly)
-      - { field: HINS1, op: eq, value: 1, weight: 1 }                                                   # employer-based health insurance
-
-      # ───── Income ─────
-      - { field: PINCP, op: range, value: [25000, 150000], weight: 1 }                                  # earnings $25k-$150k
-      - { field: POVPIP, op: gte, value: 150, weight: 0.5 }                                             # not in too much poverty
-      - { field: WAGP, op: gte, value: 1, weight: 0.5 }                                                  # has wage income
-
-      # ───── Commute ─────
-      - { field: JWTRNS, op: in, value: [3, 4, 5, 6, 7, 11, 12, 14], weight: 1.5 }                       # transit / walk / bike / WFH
-      - { field: JWTRNS, op: eq, value: 14, weight: 1 }                                                 # works from home extra
-      - { field: VEH, op: eq, value: 0, weight: 2 }                                                      # no vehicles
-      - { field: VEH, op: lte, value: 1, weight: 1 }                                                     # 0 or 1 vehicle (still may drive)
-
-      # ───── Housing ─────
-      - { field: BLD, op: in, value: [4, 5, 6, 7, 8, 9], weight: 3 }                                     # multi-unit apartment (strong, not required)
-      - { field: BLD, op: in, value: [4, 5, 6], weight: 1 }                                              # small/mid apartment buildings (2-9 units, NOT high-rise)
-      - { field: TEN, op: eq, value: 3, weight: 1.5 }                                                    # renter
-      - { field: TEN, op: eq, value: 1, weight: 0.5 }                                                    # new owner with mortgage (also fits)
-      - { field: HHT, op: in, value: [5, 7], weight: 0.5 }                                               # shared nonfamily household
-
-      # ───── "Not in a fancy new building" ─────
-      # Editorial intent: queer leftists live in older, rent-controlled, pre-war
-      # housing stock (Mission, Castro, Echo Park, Berkeley duplexes). Right-leaning
-      # cohorts are more likely to be in newer construction. These signals pull
-      # placement toward the older-urban geography.
-      - { field: YBL, op: lte, value: 5, weight: 1.5 }                                                   # built before 1980
-      - { field: YBL, op: lte, value: 3, weight: 1 }                                                     # built before 1960 (deeper rent-control vintage)
-      - { field: YBL, op: lte, value: 2, weight: 0.5 }                                                   # built before 1950 (pre-war)
-      - { field: BDSP, op: lte, value: 2, weight: 0.5 }                                                  # smaller unit (1-2 BR, not luxury)
-      - { field: HINCP, op: lte, value: 200000, weight: 0.5 }                                            # household income capped (not in luxury rentals)
-
-      # ───── Person flags ─────
-      - { field: DIS, op: eq, value: 1, weight: 1 }                                                      # any disability
-      - { field: DREM, op: eq, value: 1, weight: 0.5 }                                                   # cognitive / mental-health difficulty (light bonus)
-      - { field: SCH, op: in, value: [2, 3], weight: 1.5 }                                               # currently in school
-
-      # ───── Identity / diversity (re-introduces race weighting for this subculture only) ─────
-      - { field: RAC1P, op: in, value: [2, 3, 4, 5, 6, 7, 8, 9], weight: 1 }                              # non-white identity
-      - { field: HISP, op: gte, value: 2, weight: 0.5 }                                                   # Hispanic origin
+      # ───── Identity / diversity (race as soft signal — single documented exception) ─────
+      - { field: RAC1P, op: in, value: [2, 3, 4, 5, 6, 7, 8, 9], weight: 1 }                            # non-white identity (queer-leftist communities skew non-white in CA)
+      - { field: HISP, op: gte, value: 2, weight: 0.5 }                                                 # Hispanic origin
     proxy_gap: |
-      "Leftist" is inferred from urban + queer + helping-profession correlation, not measured.
-      Single LGBTQ people remain invisible in the SAME_SEX household proxy. DREM is the closest
-      census proxy for cognitive / mental-health difficulty and is weighted lightly so absence
-      doesn't penalize. Politics, religious affiliation, and consumption patterns aren't capturable.
+      Operationalized as: queer (SAME_SEX = 1, hard gate) + 18-40 + bachelor's+ + computer + broadband
+      + employed + middle-income + flatshare or partnered + no kids, not married + creative/social-
+      service/education/government/food occupation + transit-and-no-car + settled in older
+      multi-unit rent-controlled housing + over-represented for cognitive/mental-health difficulty.
+      "Leftist" is not measured — it's inferred from the helping-profession + non-car +
+      pre-war-housing + nonprofit-or-government employment correlation. Single LGBTQ people are
+      invisible in the SAME_SEX household proxy (the cohort is partnered queer leftists). The
+      DREM weight encodes the well-documented mental-health-difficulty correlation in LGBTQ
+      populations (Meyer 2003, "minority stress model") but DREM is a broader census flag than
+      psychiatric diagnosis. Politics, religious affiliation, consumption patterns, and laptop-
+      brand specifically are not capturable. The CA non-white-identity weight is the single
+      documented exception to the no-race-gating principle (see Modeling constraints in METHODOLOGY).
 
   - id: married_gays
     name: Married gays
