@@ -46,6 +46,17 @@ Each subculture is defined as a configuration record with four components:
 
 The full configuration is in `data-pipeline/subcultures.yaml`.
 
+### Cohorts in this implementation
+
+Six named cohorts are configured at the time of writing. The expected diagnostic pattern (per the "Diagnostics as calibration signals" subsection below) is noted alongside each.
+
+- **Queer leftist** (`queer_leftist`). College-educated, urban, transit-using, creative-or-social-service occupation, often a student. SAME_SEX = 1 is a heavy soft signal but not a gate, so the cohort spans both partnered and single LGBTQ records plus lifestyle-aligned allies. τ = 0.45. *Demographically anchored* — R² ≈ 0.67, Moran's I residual non-significant.
+- **Married gays** (`married_gays`). Any same-sex married couple. *Historically clustered* — R² ≈ 0.20, the cohort lives in a few enclaves (Castro / West Hollywood / Palm Springs) that demographic predictors cannot smoothly map.
+- **Bilingual baddie** (`bilingual_baddie`). Young, female, non-English at home, service or healthcare-support work, mid-low income. *Demographically anchored* — R² ≈ 0.82, the highest in the project. The Spanish-language and Hispanic-population marginals carry strong tract-level signal.
+- **Crumbl cookie couple** (`crumbl_cookie_couple`). 24-38, married, dual-earner ≥ $130k household income, full-time worker, recent mover, single-family detached or attached, two cars. Both homeowners-with-mortgage and renters qualify (homeowners weighted higher). *Demographically anchored, residual spatial structure remains* — R² ≈ 0.47, Moran's I residual is significant, indicating the new-suburb geography is not fully captured by the chosen marginals.
+- **California hillbilly** (`hill_people`). Adult, lives on 1+ acres, mobile home or detached single-family, off-grid heating fuel (wood, propane), low income, often disabled, settled. *Historically clustered* — R² ≈ 0.77 with significant residual Moran's I; concentrates in the Sierra foothills, North Coast, and northeastern California.
+- **Crazy person on the bus** (`crazy_person`). Below poverty line (gated), severely mentally-ill (DREM heavy), 25-55, often in shelters or group quarters, no plumbing, long-detached from labor force. *Demographically anchored* — R² ≈ 0.61, concentrating in inner-city tracts (Tenderloin, Skid Row, downtown Oakland) and working-class non-major cities (Stockton, Fresno, Bakersfield).
+
 ## Modeling constraints
 
 The vectors in this implementation observe the following modeling constraints.
@@ -62,7 +73,7 @@ The vectors in this implementation observe the following modeling constraints.
 
 The membership rule is two-stage. We first compute a continuous fit score per record, then apply a per-cohort threshold to derive a binary cohort membership indicator. The PUMA-level estimand is then the weighted count of cohort members, a well-defined population total in the standard small-area-estimation sense (Fay & Herriot 1979; Rao & Molina 2015).
 
-This two-stage formulation replaces an earlier fuzzy-set scoring scheme in which the PUMA-level estimand was the PWGTP-weighted sum of soft similarity scores. That earlier estimand was a fuzzy-set σ-count (Zadeh 1983) rather than a population total, and applying the Fay-Herriot machinery to it was a conceptual stretch. Threshold-based membership produces a quantity the downstream machinery is designed for, and connects directly to standard practice in synthetic-population microsimulation, where binary cohort criteria are applied to a tract-resolution synthetic dataset (Beckman, Baggerly & McKay 1996; Williamson, Birkin & Rees 1998; Tanton & Edwards 2013).
+Threshold-based membership produces a quantity the downstream Fay-Herriot machinery is designed for: a population total in the standard small-area-estimation sense. The approach connects directly to standard practice in synthetic-population microsimulation, where binary cohort criteria are applied to a tract-resolution synthetic dataset (Beckman, Baggerly & McKay 1996; Williamson, Birkin & Rees 1998; Tanton & Edwards 2013). The threshold-as-operating-point structure is also identical to operating-point selection on a continuous decision function in classifier evaluation (Hanley & McNeil 1982; Pepe 2003).
 
 ### Stage 1: Fit score
 
@@ -102,7 +113,7 @@ The result is a well-defined population total: the weighted count of cohort memb
 Three within-cohort diagnostics are retained alongside the primary count, for transparency and threshold-sensitivity analysis. Each is reported per cohort in `summary.json` and `model_summaries.json`.
 
 - **Weighted gate-pass count:** `Σ gate × PWGTP`, the weighted count of records that pass the cohort's required conditions before the threshold filter is applied. The ratio `member_count / gate_pass_count` is the share of gate-passers who clear the threshold; values close to 1 indicate τ is loose, values close to 0 indicate τ is tight.
-- **Weighted soft total:** `Σ fit_score × PWGTP`, the weighted sum of fit scores across all gate-passing records. This is the previous primary estimand under fuzzy-set scoring, retained as a continuous secondary diagnostic.
+- **Weighted soft total:** `Σ fit_score × PWGTP`, the weighted sum of fit scores across all gate-passing records. A continuous companion to the binary member count, useful for threshold-sensitivity analysis: it answers "what would the cohort size look like if we credited partial fit instead of binary membership?"
 - **Mean fit per member:** `Σ (fit × member × PWGTP) / Σ (member × PWGTP)`, the average fit score among cohort members. Values close to 1 indicate the cohort is dominated by textbook examples; values close to τ indicate the cohort is dominated by marginal qualifiers, which is a sign τ may be too low for the cohort's editorial intent.
 
 ### Interpretation
@@ -322,7 +333,7 @@ A reviewer's leverage on improving the map's accuracy is therefore highest at (1
 
 - *Multicollinearity-driven dropout.* Tract-level count predictors at PUMA scale typically correlate strongly with PUMA population. NNLS+Ridge will zero a predictor when its variation is largely explained by population. A coefficient of zero should be read as "this predictor adds no information beyond what others already capture," not "this predictor is irrelevant to the cohort." VIF values are reported per coefficient so this can be interpreted directly.
 
-- *Sensitivity not formally characterized.* Adding or removing a single marginal can change LOOCV R² substantially. For example, the bilingual_baddie cohort moved from LOOCV R² ≈ 0.64 to ≈ 0.74 simply by swapping the tract-suppressed Table B16001 (which returned all zeros at tract level) for the published Table C16001. We have not quantified per-cohort sensitivity to marginal-set perturbation; a leave-one-marginal-out R² delta would be a natural extension.
+- *Sensitivity not formally characterized.* Adding or removing a single marginal can change LOOCV R² substantially. For example, swapping the tract-suppressed Table B16001 (which returned all zeros at tract level) for the published Table C16001 was the move that gave the bilingual_baddie cohort a working tract-level marginal — its LOOCV R² is now ≈ 0.82. We have not quantified per-cohort sensitivity to marginal-set perturbation; a leave-one-marginal-out R² delta would be a natural extension.
 
 - *No external validation.* The pipeline produces estimates without comparison to independent ground truth (Williams Institute LGBTQ population estimates, Pew language statistics, county-level voter registration totals). Each cohort's tract-level distribution is therefore as accurate as the correlation between the chosen marginals and the unobserved true cohort geography; we have no external check on that correlation. External validation is the single highest-leverage methodological improvement available beyond the current state.
 

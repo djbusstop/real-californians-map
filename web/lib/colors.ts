@@ -8,7 +8,6 @@ export const COLORS: Record<string, string> = {
   crumbl_cookie_couple: "#ec4899", // pink-500
   hill_people: "#15803D", // green-700, clearly green at dot scale
   crazy_person: "#2e3745", // slate-600, somber concrete
-  dad_2007: "#92400e", // amber-800, bronze / new-money copper
 };
 
 export const FALLBACK_COLOR = "#7eaaff";
