@@ -46,6 +46,9 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
   // on isStyleLoaded() — which can flip false transiently during tile
   // fetches and silently drop data updates if we gated on it.
   const [mapReady, setMapReady] = useState(false);
+  // Live zoom level, displayed in the bottom-left readout for tuning the
+  // circle-radius interpolation curve in the dots-circle paint property.
+  const [zoom, setZoom] = useState<number>(5.2);
 
   // Generate dots for all selected subcultures, each tagged with its subculture id.
   // Shuffle the combined feature array (Fisher-Yates) so that paint order is random
@@ -94,6 +97,7 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
       "bottom-right"
     );
     mapRef.current = map;
+    map.on("zoom", () => setZoom(map.getZoom()));
 
     map.on("load", () => {
       // Identify the first symbol (label) layer in the basemap so we can
@@ -125,9 +129,9 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
               4, 0.7,
               6, 0.9,
               8, 1.3,
-              10, 1.6,
-              13, 2.1,
-              16, 3.0,
+              10, 2.0,
+              12, 3.2,
+              15, 7.0,
             ],
             "circle-color": colorMatchExpression(),
             "circle-opacity": [
@@ -192,7 +196,7 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
       >
         {dots.features.length.toLocaleString()} dots ·{" "}
         {selectedIds.length} subculture{selectedIds.length === 1 ? "" : "s"} · 1 dot ≈{" "}
-        {DOTS_PER_UNIT.toLocaleString()} people
+        {DOTS_PER_UNIT.toLocaleString()} people · zoom {zoom.toFixed(2)}
       </div>
     </div>
   );
