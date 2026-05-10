@@ -133,11 +133,13 @@ HOUSING_VARS = [
 # Direct CSV download from the Census FTP. The API endpoint had reliability issues
 # (intermittent 500s on small queries, can't pin down the cause), so we pull the
 # bulk CSVs once and parse locally. Much faster after the first run.
-# Using 1-year 2023 PUMS for v0 — smaller download (~80MB person + ~25MB housing),
-# ~390k person records, plenty for similarity scoring at PUMA level.
-# Switch to /5-Year/ paths if you want the larger 2019-2023 sample later.
-PUMS_PERSON_URL = "https://www2.census.gov/programs-surveys/acs/data/pums/2023/1-Year/csv_pca.zip"
-PUMS_HOUSING_URL = "https://www2.census.gov/programs-surveys/acs/data/pums/2023/1-Year/csv_hca.zip"
+# Using 5-year 2023 PUMS (covers 2019-2023, ~2M CA person records, ~5x the 1-year
+# sample). Larger downloads (~400MB person + ~120MB housing) and slower first-run
+# parquet generation, but dramatically lower per-PUMA sampling variance for narrow
+# cohorts under hard gates. The aggregated tract-level marginal tables are the
+# 5-year tables either way; this just changes the microdata layer.
+PUMS_PERSON_URL = "https://www2.census.gov/programs-surveys/acs/data/pums/2023/5-Year/csv_pca.zip"
+PUMS_HOUSING_URL = "https://www2.census.gov/programs-surveys/acs/data/pums/2023/5-Year/csv_hca.zip"
 
 # PUMA boundary candidates, tried in order. The cartographic boundary (CB) files
 # are smaller and prettier; TIGER/Line is larger but more reliably available.
