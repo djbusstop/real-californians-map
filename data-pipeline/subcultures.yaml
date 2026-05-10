@@ -167,6 +167,7 @@ subcultures:
       - { field: AGEP, op: range, value: [24, 38], weight: 2, required: true }
       - { field: SCHL, op: gte, value: 19, weight: 1.5, required: true } # some college or higher
       - { field: ESR, op: in, value: [1, 2], weight: 1.5, required: true } # employed
+      - { field: WKHP, op: gte, value: 35, weight: 1, required: true } # full-time work
       - {
           field: RELSHIPP,
           op: in,
@@ -174,24 +175,24 @@ subcultures:
           weight: 1,
           required: true,
         } # householder or spouse / partner
-      - { field: JWTRNS, op: in, value: [1, 2], weight: 2, required: true } # drove (alone or carpool) — always
-      - { field: TEN, op: eq, value: 1, weight: 2 } # owned with mortgage (strong soft, not required)
+      - { field: JWTRNS, op: in, value: [1, 2], weight: 2, required: true } # drove (alone or carpool)
+      - { field: TEN, op: in, value: [1, 3], weight: 1, required: true } # owned with mortgage or rented (excludes "owned free and clear" and "no payment")
+      - { field: TEN, op: eq, value: 1, weight: 3 } # owned with mortgage — heavily bonused (the gold standard for "on the property ladder")
+      - { field: TEN, op: eq, value: 3, weight: 1 } # renter — still counts
+      - { field: HHT, op: eq, value: 1, weight: 1.5, required: true } # married-couple household
+      - { field: HINCP, op: gte, value: 130000, weight: 1.5, required: true } # household income $130k+ (proxy for dual-earner)
 
-      # Couple structure (married OR cohabiting partners both fit)
-      - { field: MAR, op: eq, value: 1, weight: 1.5 } # married helps
-      - { field: HHT, op: eq, value: 1, weight: 1.5 } # married-couple household
-      - { field: HHT, op: in, value: [5, 7], weight: 1 } # nonfamily multi-person (catches unmarried-partner households)
-      - { field: WKHP, op: gte, value: 35, weight: 1 } # full-time work
+      # Couple flavor
+      - { field: MAR, op: eq, value: 1, weight: 1.5 } # married
 
       # Income range
       - { field: PINCP, op: range, value: [55000, 100000], weight: 1.5 } # personal income $55-100k
-      - { field: HINCP, op: gte, value: 110000, weight: 1.5 } # household income $110k+
       - { field: POVPIP, op: gte, value: 400, weight: 0.5 } # well above poverty line
 
-      # Housing — suburban-coded
+      # Housing — suburban-coded, newly bought
       - { field: BLD, op: in, value: [2, 3], weight: 2 } # single-family detached or attached
-      - { field: VEH, op: gte, value: 2, weight: 1.5 } # two cars (the gold standard)
-      - { field: MV, op: in, value: [1, 2, 3], weight: 1.5 } # moved in within last 9 years (new homeowner)
+      - { field: VEH, op: gte, value: 2, weight: 3 } # two cars — one per partner (heavy soft signal)
+      - { field: MV, op: in, value: [1, 2], weight: 1.5 } # moved in within last 4 years (newly on the ladder)
       - { field: VALP, op: lte, value: 1500000, weight: 1 } # property value under $1.5M
       - { field: HFL, op: in, value: [1, 3], weight: 0.5 } # utility gas or electric heat (suburban hookups)
       - { field: BDSP, op: gte, value: 3, weight: 0.5 } # 3+ bedrooms (the starter-family home)
