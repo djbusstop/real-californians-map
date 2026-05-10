@@ -41,6 +41,16 @@ Open `data-pipeline/subcultures.yaml` and edit any vector. Every condition has a
 
 `data-pipeline/FIELDS.md` is the reference for every census variable available, including the ones not currently used.
 
+### One-shot rebuild + run (from `web/`)
+
+After editing the YAML, this single command re-runs the pipeline, syncs the outputs into the web app, and starts the dev server:
+
+```sh
+(cd ../data-pipeline && source .venv/bin/activate && python pipeline.py) && npm run sync-data && npm run dev
+```
+
+The subshell `( ... )` keeps the `cd` local to the pipeline run so you stay in `web/`. The `&&` chain ensures each step only runs if the previous one succeeded.
+
 ## Methodology
 
 See [METHODOLOGY.md](./METHODOLOGY.md) for the full description of data sources, scoring, small-area estimation, dot density rendering, and limitations.

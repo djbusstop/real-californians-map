@@ -20,7 +20,7 @@ const PUMA_CODE_KEYS = ["GEOID", "GEOID20", "GEOIDFQ", "PUMACE20", "PUMA20", "PU
 
 // One dot per N units of weighted score, applied uniformly across subcultures.
 // Smaller subcultures genuinely show as fewer dots — that's the honest picture.
-const DOTS_PER_UNIT = 100;
+const DOTS_PER_UNIT = 20;
 
 const BASEMAP_STYLE = "https://tiles.openfreemap.org/styles/positron";
 
@@ -111,12 +111,12 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
               "interpolate",
               ["exponential", 1.6],
               ["zoom"],
-              4, 1.2,
-              6, 1.7,
-              8, 2.5,
-              10, 3.0,
-              13, 4.0,
-              16, 7.0,
+              4, 0.7,
+              6, 0.9,
+              8, 1.3,
+              10, 1.6,
+              13, 2.1,
+              16, 3.0,
             ],
             "circle-color": colorMatchExpression(),
             "circle-opacity": [

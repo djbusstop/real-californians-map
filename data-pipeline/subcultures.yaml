@@ -31,22 +31,25 @@ subcultures:
       - B25034_011E   # housing units built 1939 or earlier (pre-war / rent-controlled urban geography)
     vector:
       # ───── Hard gates ─────
-      - { field: AGEP, op: range, value: [18, 40], weight: 1.5, required: true }
+      - { field: AGEP, op: range, value: [22, 50], weight: 1.5, required: true }                        # broad working age (was 18-40, expanded — established queer leftists are older too)
       - { field: SCHL, op: gte, value: 21, weight: 1.5, required: true }                                # bachelor's or higher
       - { field: LAPTOP, op: eq, value: 1, weight: 1.5, required: true }                                # has a laptop or desktop in the household
       - { field: ESR, op: in, value: [1, 2, 3], weight: 1, required: true }                             # not retired (employed/unemployed only)
       - { field: WKL, op: eq, value: 1, weight: 1, required: true }                                     # last worked within 12 months
-      - { field: MV, op: in, value: [1, 2, 3], weight: 1, required: true }                              # householder moved in within last 9 years (must)
 
-      # ───── Identity / queer signal (heavy weight, dominates scoring) ─────
-      - { field: SAME_SEX, op: eq, value: 1, weight: 4 }
-      - { field: PARTNER, op: in, value: [1, 2], weight: 2 }                                            # has unmarried partner present (any sex)
+      # ───── Identity / queer signal (now a hard gate — see proxy_gap) ─────
+      - { field: SAME_SEX, op: eq, value: 1, weight: 4, required: true }                                # MUST be in a same-sex household
+      - { field: PARTNER, op: eq, value: 2, weight: 2 }                                                 # same-sex unmarried partner present (extra)
       - { field: RELSHIPP, op: in, value: [20, 23, 24, 36], weight: 1.5 }                               # householder / same-sex spouse / partner / other nonrelative
 
-      # ───── Recency of move (gentrifier-leaning) ─────
-      - { field: MV, op: eq, value: 1, weight: 2 }                                                      # within 12 months — strongest
-      - { field: MV, op: in, value: [1, 2], weight: 1.5 }                                               # within 4 years — strong
-      - { field: MIG, op: in, value: [2, 3, 4, 5], weight: 0.5 }                                        # not in same house a year ago
+      # ───── Settled, hardworking pattern (was "gentrifier-leaning", reversed per editorial intent) ─────
+      # The classic queer leftist has often been in the same rent-controlled apartment for many
+      # years — established, working full-time, not a recent gentrifier-arrival. Signals:
+      - { field: MIG, op: eq, value: 1, weight: 1 }                                                     # lived in same house a year ago (settled)
+      - { field: MV, op: gte, value: 3, weight: 1 }                                                     # moved in 5+ years ago (rooted)
+      - { field: MV, op: gte, value: 4, weight: 0.5 }                                                   # moved in 10+ years ago (long-tenured renter)
+      - { field: WKHP, op: gte, value: 35, weight: 1.5 }                                                # full-time hours
+      - { field: WKHP, op: gte, value: 40, weight: 0.5 }                                                # 40+ hours
 
       # ───── Family structure ─────
       - { field: HUPAOC, op: eq, value: 4, weight: 1.5 }                                                # no own children
