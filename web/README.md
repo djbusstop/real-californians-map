@@ -1,6 +1,6 @@
 # Real Californians: web app
 
-Next.js app that renders the subculture scores as a choropleth on California's PUMAs. Sister to `/data-pipeline/`, which produces the data this app reads.
+The Next.js app that renders the subculture cohort scores as dot density on California census tracts. The data comes from `data-pipeline/`, which produces the JSON outputs this app reads.
 
 ## First-run setup
 
@@ -14,48 +14,50 @@ npm run dev
 
 Then open http://localhost:3000.
 
-`sync-data` copies `scores.json`, `pumas_ca.geojson`, and `summary.json` from `../data-pipeline/data/`. Re-run `sync-data` whenever you re-run the pipeline.
+`sync-data` copies `tract_scores.json` and `tracts_ca.geojson` from `../data-pipeline/data/`. Re-run `sync-data` whenever you re-run the pipeline.
 
-## What's in v0
+After editing `subcultures.yaml`, the typical iteration loop from this folder is:
 
-- 281 California PUMAs rendered as faint outlines.
-- Dot density layer: random points scattered inside each PUMA, count proportional to that PUMA's score for the selected subculture.
-- Sidebar with the 9 subcultures from `subcultures.yaml`.
-- Click a subculture, dots and color regenerate.
-- Hover a PUMA to see its name and score.
-
-Tuning knob: `DOTS_PER_UNIT` in `components/MapView.tsx` controls density. Lower = more dots = denser visual but slower regeneration. Default 500, which gives ~15-30k dots per subculture and feels smooth.
-
-## Known caveats (read before judging the data)
-
-- **Scores are inflated.** Soft scoring without gates means a person can partially fit several subcultures, so per-subculture totals sum to ~2.5× California's population. The relative shape between PUMAs is meaningful; the absolute numbers are not.
-- **Queer leftist is currently broken.** The `SAME_SEX` household indicator is a stub set to 0 in the pipeline. The map still renders something for this subculture, but it's measuring "young + educated + urban + renter + helping profession," not actual queer households. Will be wired up in a follow-up.
-- **No tile basemap.** Polygons are on a flat dark background. We can layer in OpenFreeMap or similar later if you want geographic context (city labels, coastline).
-- **No dot density yet.** Choropleth was the fastest way to see the data shape. Dot density is a possible next step once proxies are tuned.
-
-## Adding a tile basemap later
-
-Drop in OpenFreeMap (free, no API key) by replacing the `style: { ... }` literal in `components/MapView.tsx` with:
-
-```ts
-style: "https://tiles.openfreemap.org/styles/positron"
+```sh
+(cd ../data-pipeline && source .venv/bin/activate && python pipeline.py) && npm run sync-data && npm run dev
 ```
 
-Positron is a clean grayscale style that works as a backdrop for data overlays.
+## What the app does
+
+- Loads cohort tract scores and California tract geometry on first paint.
+- Renders each cohort as random dots inside the tracts where it concentrates. One dot represents about 20 weighted cohort-equivalent people.
+- Sidebar lists the named cohorts; click to toggle each on or off. Multiple cohorts can render simultaneously, each with its own color.
+- Mobile-responsive layout: sidebar slides in and out via a toggle button at narrow viewports.
+- Map is clipped to California's land area, so dots never fall in the ocean or the Bay.
+- OpenFreeMap positron basemap underneath the dots. City and place-name labels are layered above the dots so they remain readable.
+
+## Configurable knobs
+
+- `DOTS_PER_UNIT` in `components/MapView.tsx` controls dot density. Currently 20 (one dot ≈ 20 weighted people). Lower = more dots = denser visual.
+- The zoom-radius interpolation expression in `components/MapView.tsx` controls dot size at each zoom level. Edit the array of `(zoom, radius)` pairs inside the `circle-radius` paint property.
+- `COLORS` in `lib/colors.ts` is the single source of truth for cohort colors. Edit one map there and the sidebar, dots, and mobile legend all update consistently.
+- Cohort definitions, trait vectors, and tract marginals live in `../data-pipeline/subcultures.yaml`. Edit there, re-run the pipeline, re-sync data.
 
 ## File structure
 
 ```
 app/
   layout.tsx           Root layout
-  page.tsx             Main page with subculture state
+  page.tsx             Main page; cohort selection state, mobile-responsive layout
   globals.css          Minimal styles
 components/
-  Sidebar.tsx          Subculture browser
-  MapView.tsx          MapLibre choropleth
+  MapView.tsx          MapLibre map with dot density layer
+  Sidebar.tsx          Cohort browser with name + vibe
+lib/
+  colors.ts            Cohort color palette
+utils/
+  dotgen.ts            Random-point generation inside tract polygons (turf-based)
 public/
   data/                (synced from data-pipeline/data/)
-    scores.json
-    pumas_ca.geojson
-    summary.json
+    tract_scores.json
+    tracts_ca.geojson
 ```
+
+## Methodology
+
+For the analytical layer (cohort definitions, scoring, small-area estimation, diagnostics, limitations), see [METHODOLOGY.md](../METHODOLOGY.md) at the project root.
