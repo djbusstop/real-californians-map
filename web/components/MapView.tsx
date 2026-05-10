@@ -81,13 +81,15 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
       style: BASEMAP_STYLE,
       center: [-119.5, 37.5],
       zoom: 5.2,
-      minZoom: 5,
+      minZoom: 4,
       maxPitch: 60,
-      // California-ish bounding box: SW to NE corners. Pan and zoom-out beyond
-      // these are clamped, so the user can't drift off into Nevada or the Pacific.
+      // California-centered bounding box. ~6° horizontal padding (about half
+      // California's lon width) gives breathing room east/west to see ocean
+      // and Nevada; vertical padding is kept tight (~1°) since N/S drift
+      // adds little context.
       maxBounds: [
-        [-125.5, 32.0],
-        [-113.5, 42.5],
+        [-131.5, 31.0],
+        [-107.5, 43.5],
       ],
       attributionControl: false,
     });
