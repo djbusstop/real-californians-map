@@ -1,5 +1,15 @@
 # Where Real Californians Live — Methodology
 
+## Project framing
+
+*Where Real Californians Live* is a work of speculative cartography rather than spatial demography. It does not claim to objectively measure how cultural groups are distributed across the state. It asks a different question: when a cultural archetype is operationalized as a vector of demographic, occupational, and household characteristics, does the resulting geography match the one that motivated the archetype in the first place?
+
+The trait vector for each cohort is therefore the hypothesis, not the measurement. We are testing whether stereotypes, archetypes, and other intuitive cultural categories have demographic anchoring in census data. Some categories validate cleanly: the bilingual baddie (young, female, non-English at home, service or healthcare-support work, lives with family or roommates, lower-middle income) maps closely onto Spanish-language and Hispanic-population geography in California. Other categories anchor poorly. Married gays exist in a handful of historical enclaves (the Castro, West Hollywood, Palm Springs) rather than as a smooth demographic gradient, so the cohort's regression R² is low and residual Moran's I is small. This is not because the model is broken; it is because the category lives in cultural-historical specificity that demographic predictors cannot reach.
+
+Both outcomes are findings. A cohort that maps tightly tells us its archetype is demographically real, in the sense that the census measures it. A cohort that maps loosely tells us its archetype lives more in cultural performance, historical migration patterns, or other non-demographic anchorings. The map is the medium of the test, and the test sits in the third position between "stereotypes are obviously true" and "stereotypes are obviously made up." It says: here is whether your imagination of a cultural category has demographic anchoring, given the census's particular categories.
+
+Methodological precedents for this orientation include Rebecca Solnit's *Infinite City: A San Francisco Atlas* (University of California Press, 2010) and the broader tradition of speculative or critical cartography, which treats geographic data as a substrate for rendering social imaginaries rather than for measuring objective truths. The statistical rigor of this project (Fay-Herriot area-level estimation, ridge regression with non-negativity constraints, leave-one-out cross-validation, Conley spatial HAC standard errors, non-parametric bootstrap percentile intervals, Moran's I residual diagnostics, VIF reporting) is what makes each observation within each test reliable. The tests themselves, however, are intentionally subjective: they operationalize cultural intuition into census categories and report what the data does with them. The "Sources of uncertainty" subsection of Limitations names the irreducibly subjective component of the project explicitly.
+
 ## Overview
 
 This document describes the methodology behind *Where Real Californians Live*: data sources, scoring framework, geographic distribution procedure, visualization approach, and known limitations.
@@ -267,5 +277,6 @@ Modifying a single condition in the configuration, re-running the pipeline (appr
 - Moran, P. A. P. (1950). Notes on continuous stochastic phenomena. *Biometrika*, 37(1/2), 17–23.
 - Prasad, N. G. N., & Rao, J. N. K. (1990). The estimation of the mean squared error of small-area estimators. *Journal of the American Statistical Association*, 85(409), 163–171.
 - Rao, J. N. K., & Molina, I. (2015). *Small Area Estimation* (2nd ed.). Wiley.
+- Solnit, R. (2010). *Infinite City: A San Francisco Atlas*. University of California Press.
 - U.S. Census Bureau. (2023). *PUMS Accuracy of the Data*. American Community Survey documentation.
 - Wolter, K. M. (2007). *Introduction to Variance Estimation* (2nd ed.). Springer.
