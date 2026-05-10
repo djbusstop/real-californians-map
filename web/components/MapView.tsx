@@ -40,7 +40,7 @@ const BASE_RADIUS_STOPS: [number, number][] = [
 function buildRadiusExpression(scale: number): maplibregl.ExpressionSpecification {
   const interp: (string | number | string[])[] = [
     "interpolate",
-    ["exponential", 1.6],
+    ["exponential", "1.6"],
     ["zoom"],
   ];
   for (const [z, r] of BASE_RADIUS_STOPS) {
