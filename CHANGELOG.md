@@ -4,6 +4,26 @@ All notable changes to this project are recorded in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] — 2026-05-10
+
+A patch release. Fixes a silent field-rename bug in the year-built signal that had been zeroing the old-housing soft signals on multiple cohorts since the 5-Year switch, and adds a family-portrait cohort.
+
+### Added
+
+- `dad_2007` cohort: a family-portrait persona with a wealthy mid-life household envelope (property >$1M, 4+ bed, detached, 1990+ build, owned with mortgage, kids 6-17) and dad's life-stage signals (40-55, male, ever-married, bachelor's+, in labor force, $150k+ income, often works from home). Wired into the web app with a bronze (`#92400e`) dot color.
+
+### Fixed
+
+- **`YBL` → `YRBLT` field rename in 2023 5-Year PUMS.** PUMS now encodes year-built as `YRBLT` (decade-start year, e.g. 1939, 1970, 2000, 2020) rather than the older `YBL` decade-integer code. The pipeline still asked for `YBL`, so every YBL condition silently scored zero. This had been masking the old-housing signals on `queer_leftist`, `hill_people`, and was the cause of `dad_2007` having zero gate-passers entirely. Pipeline now requests `YRBLT` and all three cohorts have year-built conditions retranslated to the year-value scheme. Old housing cohorts (queer_leftist, hill_people) should look slightly more concentrated in their pre-1980 geographies after this fix.
+
+### Changed
+
+- `dad_2007` vector loosened during iteration: `ACR eq 2` (lot 1-9.99 ac) gate dropped entirely, build-year widened from 2000-2009 specifically to 1990+, after the original tight stack collapsed to zero gate-passers in CA PUMS.
+
+### Removed
+
+- `divorced_wine_mom` cohort — added during 0.2.0 development, then removed before this release. Net effect on the published cohort set: unchanged from 0.2.0.
+
 ## [0.2.0] — 2026-05-10
 
 The methodology release. Reframed the project as a piece of speculative cartography in the spirit of Solnit's *Infinite City* and gave the analytical layer enough rigour to defend at academic standards. Replaced fuzzy-set scoring with threshold-based binary cohort membership so the headline estimand is a population total in the standard small-area-estimation sense rather than a fuzzy-set σ-count. Switched the rendering layer from PUMA-level choropleth to tract-level dot density. Cohort taxonomy revised down to six named archetypes.
