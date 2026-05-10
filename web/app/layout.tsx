@@ -3,8 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Where Real Californians Live",
-  description:
-    "Subcultures of California, mapped from ACS PUMS via configurable proxy vectors.",
+  description: "This isn't your grandma's census data map.",
 };
 
 export default function RootLayout({

@@ -227,18 +227,18 @@ subcultures:
       # Hard gates
       - { field: SEX, op: eq, value: 2, weight: 1.5, required: true } # female
       - { field: LANX, op: eq, value: 1, weight: 2, required: true } # non-English at home
-      - { field: AGEP, op: range, value: [19, 32], weight: 2, required: true } # young (widened to include early 30s)
+      - { field: AGEP, op: range, value: [19, 29], weight: 2, required: true } # young (peak baddie era)
+      - { field: MAR, op: in, value: [3, 4, 5], weight: 1.5, required: true } # not currently married (single)
+      - { field: HHT, op: in, value: [1, 2, 3, 5, 7], weight: 1, required: true } # lives with people (family or shared nonfamily, not alone)
 
       # English ability — strong soft signal, not required (some Paso-style baddies aren't fluent yet)
       - { field: ENG, op: lte, value: 2, weight: 1.5 }
 
-      # Marital status — single, partnered, or married all qualify; never married helps but doesn't gate
-      - { field: MAR, op: eq, value: 5, weight: 1 } # never married helps
-      - { field: MAR, op: in, value: [3, 4], weight: 0.5 } # divorced or separated
+      # Never-married subset gets an extra small bonus
+      - { field: MAR, op: eq, value: 5, weight: 0.5 } # never married
 
-      # Living situation: family helps, but flatshare and solo also fit Mission-style baddies
-      - { field: HHT, op: in, value: [1, 2, 3], weight: 1.5 } # family household — strong soft signal
-      - { field: HHT, op: in, value: [5, 7], weight: 1 } # shared nonfamily — also fits
+      # Living-situation flavor (gate already requires not-alone; bonus the lives-with-family subset)
+      - { field: HHT, op: in, value: [1, 2, 3], weight: 1 } # family household — Mission-style baddie
       - { field: RELSHIPP, op: in, value: [25, 26, 27, 30, 33], weight: 1 } # child / relative of householder
 
       # Identity
