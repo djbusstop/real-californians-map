@@ -177,19 +177,23 @@ The shrinkage factor γ_p has a clear interpretation: when σ²_e_p is large rel
 
 ### Step 4 — Predict tract scores and rake to EBLUP totals
 
-For each tract *t* in PUMA *p*, the model predicts a raw tract count using the standardization parameters fit at PUMA level:
+The within-PUMA distribution uses the regression coefficients as a *synthetic share*: the standardized coefficients are back-transformed to raw units (β_raw_k = β̂_k / σ_k), and a tract's relative share within its PUMA is
 
 ```
-predicted(t) = ȳ + Σ_k β_k · ((x_k(t) − μ_k) / σ_k)
+share(t) = Σ_k β_raw_k · x_k(t) = Σ_k (β̂_k / σ_k) · x_k(t)
 ```
 
-Negative predictions (which can arise from below-mean predictor values combined with non-negative coefficients in a centered model) are clipped to zero. Within each PUMA, predicted tract counts are then *raked* (proportionally rescaled) so they sum to the EBLUP `ŷ_FH_p` rather than the raw direct estimate `y_p`:
+with negative values clipped to zero. Tract scores are then raked within each PUMA so they sum to the EBLUP `ŷ_FH_p`:
 
 ```
-tract_score(t, s) = predicted(t) · ( ŷ_FH_p / Σ_{t'∈T(p)} predicted(t') )
+tract_score(t, s) = share(t) · ( ŷ_FH_p / Σ_{t'∈T(p)} share(t') )
 ```
 
-Raking is a benchmarking constraint standard in production small-area estimation (Rao & Molina 2015, *Small Area Estimation*, 2nd ed., Wiley, §6.4). Using the EBLUP as the raking target rather than the direct estimate is what propagates the sampling-variance correction down to the tract level: noisy PUMS estimates for small-cohort PUMAs are stabilized toward the regression line before being distributed across tracts.
+This is the synthetic-share form of small-area distribution. The standardized fit at PUMA level (`y_p = α + Σ β̂_k z_k(p)`) is back-transformed to give per-feature unstandardized coefficients β_raw_k = β̂_k / σ_k that apply at any scale; each tract's share is then a non-negative linear combination of its marginal densities. The PUMA-level intercept α (and the y_mean baseline implied by it) does not appear in the within-PUMA share calculation, because it cancels across tracts in the same PUMA and is correctly absorbed by the raking step. A tract with zero on every marginal therefore receives exactly zero allocation, which is the correct behaviour for cohorts whose target geography is sharply rural or sharply urban.
+
+The synthetic-estimator approach has direct precedent in the small-area-estimation literature: Gonzalez (1973) introduced the synthetic estimator using raw covariate coefficients applied at smaller-area scale; Battese, Harter & Fuller (1988) is the canonical paper using unstandardized covariate coefficients to predict county-level crop areas from a satellite-derived synthetic regression; Rao & Molina (2015), *Small Area Estimation*, 2nd ed., Wiley, §4.2 surveys the synthetic and structure-preserving estimator family. The microsimulation literature already cited above for the threshold-membership rule (Williamson, Birkin & Rees 1998; Tanton & Edwards 2013) uses the same synthetic-share logic for tract-resolution allocation. The use of standardized coefficients for fitting and back-transformation for prediction is the standard ridge-regression pattern (Hastie, Tibshirani & Friedman 2009, *Elements of Statistical Learning*, §3.4).
+
+Raking is a benchmarking constraint standard in production small-area estimation (Rao & Molina 2015, §6.4). Using the EBLUP as the raking target rather than the direct estimate is what propagates the sampling-variance correction down to the tract level: noisy PUMS estimates for small-cohort PUMAs are stabilized toward the regression line before being distributed across tracts.
 
 ### Diagnostics
 
@@ -347,6 +351,7 @@ Modifying a single condition in the configuration, re-running the pipeline (appr
 ## References
 
 - Anselin, L. (1988). *Spatial Econometrics: Methods and Models*. Kluwer Academic Publishers.
+- Battese, G. E., Harter, R. M., & Fuller, W. A. (1988). An error-components model for prediction of county crop areas using survey and satellite data. *Journal of the American Statistical Association*, 83(401), 28–36.
 - Beckman, R. J., Baggerly, K. A., & McKay, M. D. (1996). Creating synthetic baseline populations. *Transportation Research Part A*, 30(6), 415–429.
 - Belsley, D. A., Kuh, E., & Welsch, R. E. (1980). *Regression Diagnostics: Identifying Influential Data and Sources of Collinearity*. Wiley.
 - Bester, C. A., Conley, T. G., & Hansen, C. B. (2011). Inference with dependent data using cluster covariance estimators. *Journal of Econometrics*, 165(2), 137–151.
@@ -355,6 +360,7 @@ Modifying a single condition in the configuration, re-running the pipeline (appr
 - Deming, W. E., & Stephan, F. F. (1940). On a least squares adjustment of a sampled frequency table when the expected marginal totals are known. *Annals of Mathematical Statistics*, 11(4), 427–444.
 - Efron, B., & Tibshirani, R. (1993). *An Introduction to the Bootstrap*. Chapman & Hall.
 - Fay, R. E., & Herriot, R. A. (1979). Estimates of income for small places: An application of James-Stein procedures to census data. *Journal of the American Statistical Association*, 74(366), 269–277.
+- Gonzalez, M. E. (1973). Use and evaluation of synthetic estimators. *Proceedings of the Social Statistics Section, American Statistical Association*, 33–36.
 - Hanley, J. A., & McNeil, B. J. (1982). The meaning and use of the area under a receiver operating characteristic (ROC) curve. *Radiology*, 143(1), 29–36.
 - Hastie, T., Tibshirani, R., & Friedman, J. (2009). *The Elements of Statistical Learning* (2nd ed.). Springer.
 - Hoerl, A. E., & Kennard, R. W. (1970). Ridge regression: Biased estimation for nonorthogonal problems. *Technometrics*, 12(1), 55–67.

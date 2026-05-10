@@ -1355,23 +1355,32 @@ def _process_one_cohort_for_tracts(
     cohort_tract_scores: dict[str, float] = {}
 
     if model and model.get("loocv_r_squared", -1) >= LOOCV_R2_THRESHOLD:
-        # Predict tract-level raw counts, then rake within each PUMA.
-        feature_means = model["feature_means"]
+        # Predict tract-level shares, then rake within each PUMA.
+        # The fit is on z-standardized PUMA-aggregated features. Plugging
+        # tract-level z-scores into the standardized formula breaks because
+        # tract values are at a different scale than the PUMA-level means/
+        # stds the standardization was calibrated against; the y_mean
+        # intercept then dominates and produces near-uniform within-PUMA
+        # allocation regardless of marginal density.
+        # Fix: back-transform the standardized coefficients to raw units
+        # (β_raw_k = β_std_k / σ_k) and predict pred(t) = Σ β_raw_k · x_k_t
+        # directly, with no intercept. This is the share-component of the
+        # response — proportional to marginal density — which is exactly
+        # what within-PUMA raking needs. The PUMA-level FH+EBLUP machinery
+        # still controls absolute totals via raking_target.
         feature_stds = model["feature_stds"]
         coefs = model["coefs"]
-        y_mean = model["y_mean"]
 
         def predict(t: str) -> float:
-            # Build standardized feature vector: [pop, M_1, ..., M_K]
             raw_features = [tract_pop.get(t, 0.0)] + [
                 marg.get(t, 0.0) for marg in marginals_list
             ]
-            z_pred = y_mean
+            pred = 0.0
             for k, x_k in enumerate(raw_features):
                 s = feature_stds[k]
                 if s > 0:
-                    z_pred += coefs[k] * (x_k - feature_means[k]) / s
-            return max(z_pred, 0.0)
+                    pred += (coefs[k] / s) * x_k
+            return max(pred, 0.0)
 
         for puma, tract_geoids in tracts_by_puma.items():
             puma_score = raking_target(puma)
