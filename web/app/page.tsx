@@ -143,6 +143,16 @@ export default function Home() {
         />
         {isMobile && selected.length > 0 && (
           <div
+            onClick={() => setSidebarOpen(true)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setSidebarOpen(true);
+              }
+            }}
+            aria-label="Open cohort sidebar"
             style={{
               position: "fixed",
               bottom: 56,
@@ -155,6 +165,7 @@ export default function Home() {
               boxShadow: "0 2px 6px rgba(0,0,0,0.08)",
               fontSize: 11,
               maxWidth: "65vw",
+              cursor: "pointer",
             }}
           >
             {selected.map((id) => {
