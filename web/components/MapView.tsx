@@ -129,7 +129,7 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
               ["exponential", 1.6],
               ["zoom"],
               4, 0.7,
-              6, 0.9,
+              6, 1,
               8, 1.3,
               10, 2.0,
               12, 3.2,
