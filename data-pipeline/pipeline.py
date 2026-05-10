@@ -83,6 +83,10 @@ PERSON_VARS = [
     "SSIP",       # Supplemental Security Income
     "DPHY",       # ambulatory (mobility) difficulty (1 yes, 2 no)
     "DREM",       # cognitive difficulty incl. mental health (1 yes, 2 no)
+    "DEAR",       # hearing difficulty (1 yes, 2 no)
+    "DEYE",       # vision difficulty (1 yes, 2 no)
+    "DOUT",       # independent living difficulty (1 yes, 2 no)
+    "DDRS",       # self-care difficulty (1 yes, 2 no)
     "PUBCOV",     # any public health insurance (1 yes, 2 no)
     "HINS1",      # employer-based health insurance (1 yes, 2 no)
     "WKL",        # when last worked (1 within 12 mo, 2 1-5 yrs ago, 3 5+ yrs ago, 4 never)
@@ -246,9 +250,12 @@ def fetch_pums() -> pd.DataFrame:
     if parquet_out.exists():
         print(f"[cache] loading {parquet_out}")
         df = pd.read_parquet(parquet_out)
-        if "PWGTP80" in df.columns:
+        # Cache must have replicate weights AND the full disability column set.
+        required_cols = ["PWGTP80", "DEAR", "DEYE", "DOUT", "DDRS"]
+        missing = [c for c in required_cols if c not in df.columns]
+        if not missing:
             return df
-        print("[cache] cached parquet lacks replicate weights; regenerating")
+        print(f"[cache] cached parquet lacks columns {missing}; regenerating")
         parquet_out.unlink()
 
     person_zip = _download(PUMS_PERSON_URL, CACHE / "pums_persons_ca.zip")

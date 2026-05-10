@@ -28,7 +28,7 @@ subcultures:
       - B11001_006E   # nonfamily households (single adults, roommates, unmarried partners)
       - B25024_005E   # 3-4 unit apartment buildings (small)
       - B25024_006E   # 5-9 unit apartment buildings (mid)
-      - B25024_009E   # 50+ unit apartment buildings (high-rise)
+      - B25034_011E   # housing units built 1939 or earlier (pre-war / rent-controlled urban geography)
     vector:
       # ───── Hard gates ─────
       - { field: AGEP, op: range, value: [18, 40], weight: 1.5, required: true }
@@ -82,10 +82,21 @@ subcultures:
 
       # ───── Housing ─────
       - { field: BLD, op: in, value: [4, 5, 6, 7, 8, 9], weight: 3 }                                     # multi-unit apartment (strong, not required)
-      - { field: BLD, op: in, value: [7, 8, 9], weight: 1 }                                              # 10+ unit building extra
+      - { field: BLD, op: in, value: [4, 5, 6], weight: 1 }                                              # small/mid apartment buildings (2-9 units, NOT high-rise)
       - { field: TEN, op: eq, value: 3, weight: 1.5 }                                                    # renter
       - { field: TEN, op: eq, value: 1, weight: 0.5 }                                                    # new owner with mortgage (also fits)
       - { field: HHT, op: in, value: [5, 7], weight: 0.5 }                                               # shared nonfamily household
+
+      # ───── "Not in a fancy new building" ─────
+      # Editorial intent: queer leftists live in older, rent-controlled, pre-war
+      # housing stock (Mission, Castro, Echo Park, Berkeley duplexes). Right-leaning
+      # cohorts are more likely to be in newer construction. These signals pull
+      # placement toward the older-urban geography.
+      - { field: YBL, op: lte, value: 5, weight: 1.5 }                                                   # built before 1980
+      - { field: YBL, op: lte, value: 3, weight: 1 }                                                     # built before 1960 (deeper rent-control vintage)
+      - { field: YBL, op: lte, value: 2, weight: 0.5 }                                                   # built before 1950 (pre-war)
+      - { field: BDSP, op: lte, value: 2, weight: 0.5 }                                                  # smaller unit (1-2 BR, not luxury)
+      - { field: HINCP, op: lte, value: 200000, weight: 0.5 }                                            # household income capped (not in luxury rentals)
 
       # ───── Person flags ─────
       - { field: DIS, op: eq, value: 1, weight: 1 }                                                      # any disability
@@ -274,4 +285,76 @@ subcultures:
       Security/SSI in old trailers with wood-or-propane heat. Doesn't capture toothlessness
       directly (no dental data in census), and doesn't distinguish "hill people" from any rural
       poor cohort — for that we'd want geographic gating, which we deliberately avoid.
+
+  - id: crazy_person
+    name: Crazy person on the bus
+    vibe: yells at the bus stop, talks to themself on the way to nowhere in particular, isn't well, isn't OK
+    tract_marginals:
+      - B19057_002E   # households receiving Supplemental Security Income (SSI)
+      - B22002_002E   # households receiving SNAP / food stamps
+      - B27003_004E   # population with Medicaid / means-tested public health coverage
+    vector:
+      # Hard gates
+      - { field: AGEP, op: range, value: [25, 75], weight: 1, required: true }                         # adult
+      - { field: DIS, op: eq, value: 1, weight: 2, required: true }                                    # has any disability
+      - { field: PUBCOV, op: eq, value: 1, weight: 2, required: true }                                 # public health insurance (Medicare/Medi-Cal)
+
+      # Disability flags (any of these contributes; DREM weighted highest as central archetype)
+      - { field: DREM, op: eq, value: 1, weight: 3 }                                                   # cognitive / mental-health difficulty
+      - { field: DPHY, op: eq, value: 1, weight: 2 }                                                   # ambulatory (mobility) difficulty
+      - { field: DOUT, op: eq, value: 1, weight: 2 }                                                   # independent living difficulty
+      - { field: DDRS, op: eq, value: 1, weight: 1.5 }                                                 # self-care difficulty
+      - { field: DEAR, op: eq, value: 1, weight: 1 }                                                   # hearing difficulty
+      - { field: DEYE, op: eq, value: 1, weight: 1 }                                                   # vision difficulty
+
+      # Not in labor force / unemployed
+      - { field: ESR, op: in, value: [3, 6], weight: 2 }                                               # unemployed or not in labor force
+      - { field: WKL, op: in, value: [2, 3, 4], weight: 1 }                                            # last worked 1+ years ago, or never
+
+      # Disability income / public assistance
+      - { field: SSIP, op: gte, value: 1, weight: 2 }                                                  # SSI (means-tested disability income)
+      - { field: SSP, op: gte, value: 1, weight: 1 }                                                   # Social Security disability income
+      - { field: PAP, op: gte, value: 1, weight: 1 }                                                   # any public assistance income
+      - { field: FS, op: eq, value: 1, weight: 1 }                                                     # household received food stamps
+
+      # Very low income / poverty
+      - { field: PINCP, op: lte, value: 15000, weight: 2 }                                             # very low personal income
+      - { field: POVPIP, op: lte, value: 100, weight: 2 }                                              # at or below poverty line
+      - { field: POVPIP, op: lte, value: 50, weight: 1 }                                               # deep poverty
+
+      # Family structure: alone
+      - { field: MAR, op: eq, value: 5, weight: 1.5 }                                                  # never married
+      - { field: MAR, op: eq, value: 3, weight: 1 }                                                    # divorced
+      - { field: HUPAOC, op: eq, value: 4, weight: 1 }                                                 # no own children present
+
+      # Precarious housing
+      - { field: TEN, op: eq, value: 4, weight: 2 }                                                    # occupied without payment of rent
+      - { field: TEN, op: eq, value: 3, weight: 1 }                                                    # rented (also fits)
+      - { field: RELSHIPP, op: eq, value: 38, weight: 3 }                                              # noninstitutionalized group quarters (shelters, halfway houses)
+      - { field: RELSHIPP, op: in, value: [25, 26, 27, 30, 33, 34, 36], weight: 1 }                    # lives in someone else's household
+
+      # Takes the bus (no vehicle)
+      - { field: VEH, op: eq, value: 0, weight: 1.5 }                                                  # no vehicles
+      - { field: JWTRNS, op: in, value: [3, 7], weight: 0.5 }                                          # bus or walk for transport (when working)
+
+      # Identity flavor
+      - { field: SCHL, op: lte, value: 17, weight: 0.5 }                                               # HS or below
+      - { field: NATIVITY, op: eq, value: 1, weight: 0.5 }                                             # US-born
+    proxy_gap: |
+      Operationalizes severe-disability + public-assistance + housing-precarity geography for adults
+      of any gender. The cohort encompasses cognitive/mental-health difficulty (DREM, weighted
+      highest), ambulatory/mobility difficulty (DPHY), independent-living difficulty (DOUT),
+      self-care difficulty (DDRS), and hearing/vision difficulty (DEAR/DEYE). DIS=1 (any
+      disability) is the structural gate; the soft signals weight specific disability types.
+      Other defining traits: on Medicare/Medi-Cal, on SSI, unemployed or out of the labor force,
+      in precarious housing (occupied without payment, in a shelter as noninstitutionalized group
+      quarters, or living in someone else's home), no vehicle. Does not directly measure
+      homelessness — PUMS reaches people in housing units and noninstitutionalized group quarters
+      but misses the entirely unsheltered population. Mental health and addiction status are not
+      measurable beyond the DREM flag, which is broader than psychiatric diagnosis. Race,
+      criminal-justice involvement, and addiction are not used as gates or weights. The cohort is
+      more accurately read as "severely-disabled adult on public assistance with health-system
+      contact and precarious housing." Geography expected: Tenderloin and Mission (SF), Skid Row
+      and parts of Hollywood (LA), parts of East Oakland, central San Diego, downtown Sacramento,
+      Stockton.
 
