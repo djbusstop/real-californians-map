@@ -6,7 +6,7 @@ export const COLORS: Record<string, string> = {
   married_gays: "#a78bfa",           // lavender (was fuchsia, now softer purple)
   bilingual_baddie: "#f97316",       // orange-500
   crumbl_cookie_couple: "#ec4899",   // pink-500
-  hill_people: "#355E3B",            // hunter green
+  hill_people: "#15803D",            // green-700, clearly green at dot scale
 };
 
 export const FALLBACK_COLOR = "#7eaaff";
