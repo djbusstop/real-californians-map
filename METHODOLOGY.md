@@ -342,6 +342,8 @@ The full pipeline — configuration, scoring code, distribution code, and visual
 
 Modifying a single condition in the configuration, re-running the pipeline (approximately one minute on cached data), and re-rendering produces an updated map. There is no hidden tuning; the methodology is fully expressed in the configuration and code.
 
+**Computational reproducibility under parallel execution.** The pipeline parallelises cohort processing and bootstrap resampling via `joblib`. Bootstrap resamples are seeded from a master RNG with deterministic per-resample sub-seeds (the standard parallel-RNG pattern in L'Ecuyer 2002, *Operations Research* 50(6), 1073–1075), so coefficient samples are bit-identical whether the pipeline runs serially or in parallel. The cohort-level parallelism uses process-based workers (`joblib`'s loky backend) so each cohort has isolated BLAS state and per-cohort outputs are deterministic. Two runs of the pipeline at the same configuration and the same input data produce identical `model_summaries.json`, `tract_scores.json`, and `summary.json` regardless of `n_jobs` settings.
+
 ## References
 
 - Anselin, L. (1988). *Spatial Econometrics: Methods and Models*. Kluwer Academic Publishers.
@@ -357,6 +359,7 @@ Modifying a single condition in the configuration, re-running the pipeline (appr
 - Hastie, T., Tibshirani, R., & Friedman, J. (2009). *The Elements of Statistical Learning* (2nd ed.). Springer.
 - Hoerl, A. E., & Kennard, R. W. (1970). Ridge regression: Biased estimation for nonorthogonal problems. *Technometrics*, 12(1), 55–67.
 - Lawson, C. L., & Hanson, R. J. (1974). *Solving Least Squares Problems*. Prentice-Hall.
+- L'Ecuyer, P. (2002). An object-oriented random-number package with many long streams and substreams. *Operations Research*, 50(6), 1073–1075.
 - LeSage, J. P., & Pace, R. K. (2009). *Introduction to Spatial Econometrics*. CRC Press.
 - Moran, P. A. P. (1950). Notes on continuous stochastic phenomena. *Biometrika*, 37(1/2), 17–23.
 - Müller, U. K., & Watson, M. W. (2017). Low-frequency econometrics. *Econometrica*, 85(4), 1057–1099.

@@ -38,6 +38,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+import joblib
 import numpy as np
 import pandas as pd
 import requests
@@ -86,6 +87,22 @@ VIF_INFINITY_THRESHOLD_R2: float = 1 - 1e-9
 # adding `threshold:` to the cohort entry in subcultures.yaml. See
 # METHODOLOGY.md "Scoring" for rationale.
 DEFAULT_MEMBERSHIP_THRESHOLD: float = 0.5
+
+# ----------------------------------------------------------------------------
+# Parallelism. Two levels:
+#   COHORT_N_JOBS  : workers used to process cohorts in distribute_to_tracts.
+#                    -1 = all cores. Process-based (loky) backend, since each
+#                    cohort does enough CPU work to amortize the fork cost.
+#   BOOTSTRAP_N_JOBS: workers used inside _compute_bootstrap_ci. Threading
+#                    backend so we don't pay pickling on every resample.
+#
+# These compose: when cohorts run in parallel, the bootstrap inside each cohort
+# worker is auto-forced to serial to avoid core oversubscription. To maximise
+# bootstrap parallelism, set COHORT_N_JOBS=1 (cohorts serial) and raise
+# BOOTSTRAP_N_JOBS to -1.
+# ----------------------------------------------------------------------------
+COHORT_N_JOBS: int = -1
+BOOTSTRAP_N_JOBS: int = -1
 
 
 # ----------------------------------------------------------------------------
@@ -786,8 +803,29 @@ def _compute_conley_se(X_z, residuals, lam, puma_ids, centroids, bandwidth_km=CO
     return [float(s) for s in se]
 
 
+def _one_bootstrap_resample(seed_b, Xz, y_centered, lam):
+    """One bootstrap resample-and-fit. Top-level so it picklable for joblib.
+
+    Each resample uses its own seeded RNG so that results are reproducible
+    under either serial or parallel execution.
+    """
+    rng_b = np.random.default_rng(seed_b)
+    n, p = Xz.shape
+    idx = rng_b.integers(0, n, size=n)
+    coefs_b = _fit_ridge_nnls(Xz[idx], y_centered[idx], lam)
+    if coefs_b is None:
+        return np.full(p, np.nan)
+    return coefs_b
+
+
 def _compute_bootstrap_ci(
-    Xz, y_centered, lam, n_bootstrap=DEFAULT_N_BOOTSTRAP, alpha=0.05, seed=42
+    Xz,
+    y_centered,
+    lam,
+    n_bootstrap=DEFAULT_N_BOOTSTRAP,
+    alpha=0.05,
+    seed=42,
+    n_jobs: int = 1,
 ):
     """Non-parametric percentile bootstrap confidence intervals for ridge+NNLS
     coefficients (Efron & Tibshirani 1993, *An Introduction to the Bootstrap*).
@@ -795,6 +833,12 @@ def _compute_bootstrap_ci(
     Resamples PUMAs with replacement n_bootstrap times, refits the same
     ridge+NNLS model at fixed λ on each resample, and returns the (α/2, 1-α/2)
     percentile interval per coefficient.
+
+    Parallelism: when n_jobs != 1, resamples are dispatched to a thread pool
+    via joblib (threading backend, since each task is small and the underlying
+    NNLS solver releases the GIL during the C-level Lawson-Hanson loop).
+    Per-resample seeds are generated up front from the parent RNG so the
+    coefficient sample set is identical across n_jobs settings.
 
     Notes:
     - λ is held fixed at the LOOCV-selected value rather than re-tuned per
@@ -809,15 +853,20 @@ def _compute_bootstrap_ci(
     """
     rng = np.random.default_rng(seed)
     n, p = Xz.shape
-    coef_samples = np.zeros((n_bootstrap, p))
+    # Pre-generate per-resample seeds so the bootstrap sample set is identical
+    # whether we run resamples serially or in parallel.
+    seeds = rng.integers(0, 2**31 - 1, size=n_bootstrap)
 
-    for b in range(n_bootstrap):
-        idx = rng.integers(0, n, size=n)
-        coefs_b = _fit_ridge_nnls(Xz[idx], y_centered[idx], lam)
-        if coefs_b is None:
-            coef_samples[b] = np.nan
-        else:
-            coef_samples[b] = coefs_b
+    if n_jobs == 1:
+        results = [
+            _one_bootstrap_resample(int(s), Xz, y_centered, lam) for s in seeds
+        ]
+    else:
+        results = joblib.Parallel(n_jobs=n_jobs, backend="threading")(
+            joblib.delayed(_one_bootstrap_resample)(int(s), Xz, y_centered, lam)
+            for s in seeds
+        )
+    coef_samples = np.asarray(results)
 
     # Drop any failed fits before computing percentiles.
     mask = ~np.isnan(coef_samples).any(axis=1)
@@ -869,6 +918,7 @@ def fit_area_level_model(
     puma_score_variance: dict[str, float] | None = None,
     puma_centroids: dict[str, tuple[float, float]] | None = None,
     n_bootstrap: int = DEFAULT_N_BOOTSTRAP,
+    bootstrap_n_jobs: int = 1,
 ) -> dict | None:
     """Fit area-level synthetic SAE model (Fay-Herriot family) with NNLS+Ridge.
 
@@ -1039,7 +1089,11 @@ def fit_area_level_model(
     boot_ci_upper: list[float] | None = None
     if n_bootstrap and n_bootstrap > 0:
         boot_ci_lower, boot_ci_upper = _compute_bootstrap_ci(
-            Xz, y_centered, best_lam, n_bootstrap=n_bootstrap
+            Xz,
+            y_centered,
+            best_lam,
+            n_bootstrap=n_bootstrap,
+            n_jobs=bootstrap_n_jobs,
         )
 
     # Count of leave-one-out splits at the chosen λ where the constrained NNLS+Ridge
@@ -1235,6 +1289,151 @@ def compute_morans_i(
     return float(morans_i), float(z), p
 
 
+def _process_one_cohort_for_tracts(
+    sub_id: str,
+    marginals_list: list[dict[str, float]],
+    marginal_names: list[str],
+    tracts_by_puma: dict[str, list[str]],
+    tract_to_puma: dict[str, str],
+    puma_pop: dict[str, float],
+    tract_pop: dict[str, float],
+    cohort_puma_scores: dict[str, float],
+    cohort_puma_variance: dict[str, float] | None,
+    spatial_weights: dict[str, list[str]] | None,
+    puma_centroids: dict[str, tuple[float, float]] | None,
+    n_bootstrap: int,
+    bootstrap_n_jobs: int,
+) -> tuple[str, dict[str, float], dict]:
+    """Per-cohort tract-allocation worker. Top-level so joblib (loky backend)
+    can pickle it across worker processes.
+
+    Returns (sub_id, tract_scores_for_cohort, summary) where:
+      - tract_scores_for_cohort: { tract_geoid: score } for this cohort only;
+        the parent caller merges these into the global output dict.
+      - summary: the cohort's regression model dict (or share-blend fallback dict).
+    """
+    from collections import defaultdict
+
+    # PUMA-aggregated marginals (sum across tracts in each PUMA).
+    puma_marginals: list[dict[str, float]] = []
+    for marg in marginals_list:
+        agg: dict[str, float] = defaultdict(float)
+        for tract_geoid, val in marg.items():
+            puma = tract_to_puma.get(tract_geoid)
+            if puma is None:
+                continue
+            agg[puma] += val
+        puma_marginals.append(dict(agg))
+
+    # ── Try regression ──
+    model = None
+    if marginals_list:
+        print(f"[fit] {sub_id}: ridge+NNLS with FH+Conley+bootstrap...")
+        model = fit_area_level_model(
+            cohort_puma_scores,
+            puma_pop,
+            puma_marginals,
+            marginal_names,
+            spatial_weights=spatial_weights,
+            puma_score_variance=cohort_puma_variance,
+            puma_centroids=puma_centroids,
+            n_bootstrap=n_bootstrap,
+            bootstrap_n_jobs=bootstrap_n_jobs,
+        )
+
+    # Use EBLUP-shrunk PUMA totals as the raking target if available;
+    # falls through to direct PUMS estimates otherwise.
+    eblup_by_puma: dict[str, float] = (
+        (model or {}).get("eblup_by_puma", {}) if model else {}
+    )
+
+    def raking_target(p: str) -> float:
+        if eblup_by_puma and p in eblup_by_puma:
+            return float(eblup_by_puma[p])
+        return float(cohort_puma_scores.get(p, 0.0))
+
+    cohort_tract_scores: dict[str, float] = {}
+
+    if model and model.get("loocv_r_squared", -1) >= LOOCV_R2_THRESHOLD:
+        # Predict tract-level raw counts, then rake within each PUMA.
+        feature_means = model["feature_means"]
+        feature_stds = model["feature_stds"]
+        coefs = model["coefs"]
+        y_mean = model["y_mean"]
+
+        def predict(t: str) -> float:
+            # Build standardized feature vector: [pop, M_1, ..., M_K]
+            raw_features = [tract_pop.get(t, 0.0)] + [
+                marg.get(t, 0.0) for marg in marginals_list
+            ]
+            z_pred = y_mean
+            for k, x_k in enumerate(raw_features):
+                s = feature_stds[k]
+                if s > 0:
+                    z_pred += coefs[k] * (x_k - feature_means[k]) / s
+            return max(z_pred, 0.0)
+
+        for puma, tract_geoids in tracts_by_puma.items():
+            puma_score = raking_target(puma)
+            if puma_score == 0:
+                continue
+            raw = {t: predict(t) for t in tract_geoids}
+            raw_sum = sum(raw.values())
+            if raw_sum <= 0:
+                share = 1.0 / len(tract_geoids) if tract_geoids else 0
+                for t in tract_geoids:
+                    cohort_tract_scores[t] = round(puma_score * share, 2)
+            else:
+                factor = puma_score / raw_sum
+                for t in tract_geoids:
+                    if raw[t] > 0:
+                        cohort_tract_scores[t] = round(raw[t] * factor, 2)
+        return sub_id, cohort_tract_scores, model
+
+    # Fallback: equal-weight share-blend, or uniform if no marginals.
+    n_marg = len(marginals_list)
+    equal_weights = [1.0] * n_marg
+    for puma, tract_geoids in tracts_by_puma.items():
+        puma_score = cohort_puma_scores.get(puma, 0.0)  # no EBLUP without regression
+        if puma_score == 0:
+            continue
+        if n_marg == 0:
+            share = 1.0 / len(tract_geoids) if tract_geoids else 0
+            blended = {t: round(puma_score * share, 2) for t in tract_geoids}
+        else:
+            marginals_per_tract: dict[str, list[float]] = {}
+            for t in tract_geoids:
+                marginals_per_tract[t] = [
+                    marg.get(t, 0.0) for marg in marginals_list
+                ]
+            blended = _phase1_share_blend(
+                puma_score, tract_geoids, marginals_per_tract, equal_weights
+            )
+        for t, v in blended.items():
+            if v > 0:
+                cohort_tract_scores[t] = v
+
+    if model:
+        fallback_reason = (
+            f"loocv_r_squared={model.get('loocv_r_squared'):.3f} below "
+            f"threshold {LOOCV_R2_THRESHOLD}"
+        )
+    elif not marginals_list:
+        fallback_reason = "no marginals declared"
+    else:
+        fallback_reason = (
+            "regression failed (insufficient PUMAs or singular matrix)"
+        )
+    summary = {
+        "method": "share-blend",
+        "n_marginals": n_marg,
+        "marginal_names": marginal_names,
+        "fallback_reason": fallback_reason,
+        "rejected_model": model,  # preserved for transparency if regression ran
+    }
+    return sub_id, cohort_tract_scores, summary
+
+
 def distribute_to_tracts(
     puma_scores: dict,
     tract_marginals_by_cohort: dict[str, list[dict[str, float]]],
@@ -1257,6 +1456,11 @@ def distribute_to_tracts(
     below threshold): equal-weight share-blend across the available marginals,
     or uniform within-PUMA distribution if no marginals are usable.
 
+    Parallelism: cohorts are processed in parallel via joblib (loky backend)
+    when COHORT_N_JOBS != 1. To avoid core oversubscription, the bootstrap
+    inside each cohort worker is forced to serial whenever cohorts run in
+    parallel; bootstrap parallelism only kicks in when COHORT_N_JOBS == 1.
+
     Returns (tract_scores, model_summaries):
       tract_scores: { tract_geoid: { sub_id: score } }
       model_summaries: { sub_id: full diagnostics dict }
@@ -1277,137 +1481,102 @@ def distribute_to_tracts(
     for tract_geoid, p in tract_to_puma.items():
         puma_pop[p] += tract_pop.get(tract_geoid, 0.0)
 
-    out: dict[str, dict[str, float]] = {}
-    summaries: dict[str, dict] = {}
+    # Decide effective parallelism. If we're parallelizing cohorts, force
+    # bootstrap to serial within each worker; otherwise let bootstrap use
+    # whatever BOOTSTRAP_N_JOBS is configured to.
+    cohort_n_jobs_effective = COHORT_N_JOBS if len(sub_ids) > 1 else 1
+    bootstrap_n_jobs_effective = (
+        BOOTSTRAP_N_JOBS if cohort_n_jobs_effective == 1 else 1
+    )
 
-    for sub_id in sorted(sub_ids):
-        marginals_list = tract_marginals_by_cohort.get(sub_id, [])
-        names = cohort_marginal_names.get(sub_id, [])
-        # PUMA-aggregated marginals (sum across tracts in each PUMA).
-        puma_marginals: list[dict[str, float]] = []
-        for marg in marginals_list:
-            agg: dict[str, float] = defaultdict(float)
-            for tract_geoid, val in marg.items():
-                puma = tract_to_puma.get(tract_geoid)
-                if puma is None:
-                    continue
-                agg[puma] += val
-            puma_marginals.append(dict(agg))
-
+    # Build the per-cohort task arguments once.
+    sorted_sub_ids = sorted(sub_ids)
+    cohort_inputs = []
+    for sub_id in sorted_sub_ids:
         cohort_puma_scores = {
             p: vals.get(sub_id, 0.0) for p, vals in puma_scores.items()
         }
-
-        # Per-PUMA sampling variance for this cohort (FH input).
         cohort_puma_variance: dict[str, float] | None = None
         if puma_score_variance is not None:
             cohort_puma_variance = {
                 p: puma_score_variance.get(p, {}).get(sub_id, 0.0)
                 for p in puma_score_variance
             }
-
-        # ── Try regression ──
-        model = None
-        if marginals_list:
-            print(f"[fit] {sub_id}: ridge+NNLS with FH+Conley+bootstrap...")
-            model = fit_area_level_model(
+        cohort_inputs.append(
+            (
+                sub_id,
+                tract_marginals_by_cohort.get(sub_id, []),
+                cohort_marginal_names.get(sub_id, []),
                 cohort_puma_scores,
-                puma_pop,
-                puma_marginals,
-                names,
-                spatial_weights=spatial_weights,
-                puma_score_variance=cohort_puma_variance,
-                puma_centroids=puma_centroids,
-                n_bootstrap=n_bootstrap,
+                cohort_puma_variance,
             )
-
-        # Use EBLUP-shrunk PUMA totals as the raking target if available;
-        # falls through to direct PUMS estimates otherwise.
-        eblup_by_puma: dict[str, float] = (
-            (model or {}).get("eblup_by_puma", {}) if model else {}
         )
 
-        def raking_target(p: str) -> float:
-            if eblup_by_puma and p in eblup_by_puma:
-                return float(eblup_by_puma[p])
-            return float(cohort_puma_scores.get(p, 0.0))
+    # Dispatch cohort workers.
+    if cohort_n_jobs_effective == 1:
+        cohort_results = [
+            _process_one_cohort_for_tracts(
+                sub_id,
+                marginals_list,
+                names,
+                tracts_by_puma,
+                tract_to_puma,
+                puma_pop,
+                tract_pop,
+                cohort_puma_scores,
+                cohort_puma_variance,
+                spatial_weights,
+                puma_centroids,
+                n_bootstrap,
+                bootstrap_n_jobs_effective,
+            )
+            for (
+                sub_id,
+                marginals_list,
+                names,
+                cohort_puma_scores,
+                cohort_puma_variance,
+            ) in cohort_inputs
+        ]
+    else:
+        print(
+            f"[parallel] dispatching {len(cohort_inputs)} cohorts to "
+            f"{cohort_n_jobs_effective} workers (loky); bootstrap forced serial"
+        )
+        cohort_results = joblib.Parallel(
+            n_jobs=cohort_n_jobs_effective, backend="loky", verbose=5
+        )(
+            joblib.delayed(_process_one_cohort_for_tracts)(
+                sub_id,
+                marginals_list,
+                names,
+                tracts_by_puma,
+                tract_to_puma,
+                puma_pop,
+                tract_pop,
+                cohort_puma_scores,
+                cohort_puma_variance,
+                spatial_weights,
+                puma_centroids,
+                n_bootstrap,
+                bootstrap_n_jobs_effective,
+            )
+            for (
+                sub_id,
+                marginals_list,
+                names,
+                cohort_puma_scores,
+                cohort_puma_variance,
+            ) in cohort_inputs
+        )
 
-        if model and model.get("loocv_r_squared", -1) >= LOOCV_R2_THRESHOLD:
-            # Predict tract-level raw counts, then rake within each PUMA.
-            feature_means = model["feature_means"]
-            feature_stds = model["feature_stds"]
-            coefs = model["coefs"]
-            y_mean = model["y_mean"]
-
-            def predict(t: str) -> float:
-                # Build standardized feature vector: [pop, M_1, ..., M_K]
-                raw_features = [tract_pop.get(t, 0.0)] + [
-                    marg.get(t, 0.0) for marg in marginals_list
-                ]
-                z_pred = y_mean
-                for k, x_k in enumerate(raw_features):
-                    s = feature_stds[k]
-                    if s > 0:
-                        z_pred += coefs[k] * (x_k - feature_means[k]) / s
-                return max(z_pred, 0.0)
-
-            for puma, tract_geoids in tracts_by_puma.items():
-                puma_score = raking_target(puma)
-                if puma_score == 0:
-                    continue
-                raw = {t: predict(t) for t in tract_geoids}
-                raw_sum = sum(raw.values())
-                if raw_sum <= 0:
-                    share = 1.0 / len(tract_geoids) if tract_geoids else 0
-                    for t in tract_geoids:
-                        out.setdefault(t, {})[sub_id] = round(puma_score * share, 2)
-                else:
-                    factor = puma_score / raw_sum
-                    for t in tract_geoids:
-                        if raw[t] > 0:
-                            out.setdefault(t, {})[sub_id] = round(raw[t] * factor, 2)
-            summaries[sub_id] = model
-        else:
-            # Fallback: equal-weight share-blend, or uniform if no marginals.
-            n_marg = len(marginals_list)
-            equal_weights = [1.0] * n_marg
-            for puma, tract_geoids in tracts_by_puma.items():
-                puma_score = cohort_puma_scores.get(puma, 0.0)  # no EBLUP without regression
-                if puma_score == 0:
-                    continue
-                if n_marg == 0:
-                    share = 1.0 / len(tract_geoids) if tract_geoids else 0
-                    blended = {t: round(puma_score * share, 2) for t in tract_geoids}
-                else:
-                    marginals_per_tract: dict[str, list[float]] = {}
-                    for t in tract_geoids:
-                        marginals_per_tract[t] = [
-                            marg.get(t, 0.0) for marg in marginals_list
-                        ]
-                    blended = _phase1_share_blend(
-                        puma_score, tract_geoids, marginals_per_tract, equal_weights
-                    )
-                for t, v in blended.items():
-                    if v > 0:
-                        out.setdefault(t, {})[sub_id] = v
-            if model:
-                fallback_reason = (
-                    f"loocv_r_squared={model.get('loocv_r_squared'):.3f} below "
-                    f"threshold {LOOCV_R2_THRESHOLD}"
-                )
-            elif not marginals_list:
-                fallback_reason = "no marginals declared"
-            else:
-                fallback_reason = (
-                    "regression failed (insufficient PUMAs or singular matrix)"
-                )
-            summaries[sub_id] = {
-                "method": "share-blend",
-                "n_marginals": n_marg,
-                "marginal_names": names,
-                "fallback_reason": fallback_reason,
-                "rejected_model": model,  # preserved for transparency if regression ran
-            }
+    # Merge per-cohort outputs into the global tract dict and summaries.
+    out: dict[str, dict[str, float]] = {}
+    summaries: dict[str, dict] = {}
+    for sub_id, cohort_tract_scores, summary in cohort_results:
+        summaries[sub_id] = summary
+        for t, score in cohort_tract_scores.items():
+            out.setdefault(t, {})[sub_id] = score
 
     return out, summaries
 

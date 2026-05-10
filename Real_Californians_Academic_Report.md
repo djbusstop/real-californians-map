@@ -130,7 +130,7 @@ When per-PUMA sampling variance is large (small cohort, high noise), γ_p is sma
 
 **Step 4: Tract-level allocation by raking.** For each tract within a PUMA, the regression predicts a raw count, negative predictions are clipped to zero, and within-PUMA tract counts are proportionally rescaled (raked, in the sense of Deming and Stephan 1940; Rao and Molina 2015) so they sum to the EBLUP rather than the noisy direct estimate. Using the EBLUP as the raking target is what propagates the sampling-variance correction down to the tract level.
 
-**Inference.** Two complementary inference statements are reported per coefficient: spatially-aware Conley (1999) standard errors with a Bartlett kernel and 75 km bandwidth (following Bester, Conley, and Hansen 2011), and non-parametric bootstrap percentile confidence intervals (Efron and Tibshirani 1993) over 1,000 PUMA resamples. Diagnostic outputs further include in-sample and LOOCV R², residual standard deviation, Variance Inflation Factors (Belsley, Kuh, and Welsch 1980), the design-matrix condition number, and Moran's *I* (Moran 1950; Cliff and Ord 1981) on PUMA residuals under queen contiguity.
+**Inference.** Two complementary inference statements are reported per coefficient: spatially-aware Conley (1999) standard errors with a Bartlett kernel and 75 km bandwidth (following Bester, Conley, and Hansen 2011), and non-parametric bootstrap percentile confidence intervals (Efron and Tibshirani 1993) over 1,000 PUMA resamples. Bootstrap resamples are seeded from a master RNG with deterministic per-resample sub-seeds following L'Ecuyer's (2002) parallel-RNG pattern, so coefficient samples are bit-identical whether the pipeline runs serially or in parallel. Diagnostic outputs further include in-sample and LOOCV R², residual standard deviation, Variance Inflation Factors (Belsley, Kuh, and Welsch 1980), the design-matrix condition number, and Moran's *I* (Moran 1950; Cliff and Ord 1981) on PUMA residuals under queen contiguity.
 
 A fallback path applies when fewer than eight PUMAs carry valid data, the design matrix is singular, or LOOCV R² falls below 0.05: the cohort defaults to an equal-weight convex combination of normalized tract-marginal shares within each PUMA, a closed-form Iterative Proportional Fitting reduction.
 
@@ -251,6 +251,8 @@ Hastie, Trevor, Robert Tibshirani, and Jerome Friedman. 2009. *The Elements of S
 Hoerl, Arthur E., and Robert W. Kennard. 1970. "Ridge Regression: Biased Estimation for Nonorthogonal Problems." *Technometrics* 12 (1): 55–67.
 
 Lawson, Charles L., and Richard J. Hanson. 1974. *Solving Least Squares Problems*. Englewood Cliffs, NJ: Prentice-Hall.
+
+L'Ecuyer, Pierre. 2002. "An Object-Oriented Random-Number Package with Many Long Streams and Substreams." *Operations Research* 50 (6): 1073–1075.
 
 LeSage, James P., and R. Kelley Pace. 2009. *Introduction to Spatial Econometrics*. Boca Raton: CRC Press.
 

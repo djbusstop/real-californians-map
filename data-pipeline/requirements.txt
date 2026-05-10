@@ -6,3 +6,4 @@ tqdm>=4.66
 geopandas>=0.14
 shapely>=2.0
 scipy>=1.11
+joblib>=1.3
