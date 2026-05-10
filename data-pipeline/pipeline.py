@@ -159,7 +159,11 @@ HOUSING_VARS = [
     "BLD",        # units in structure (2 = single-family detached)
     "VALP",       # property value (owner-occupied only)
     "HFL",        # heating fuel (2 propane, 4 oil/kerosene, 6 wood = rural signals)
-    "YBL",        # year structure built (1 = 1939 or earlier, 5 = 1970s, etc.)
+    "YRBLT",      # year structure built. PUMS 5-Year encodes this as the
+                  # decade-start year: 1939 = "1939 or earlier", 1940 = 1940s,
+                  # 1950 = 1950s, ..., 2010 = 2010s, 2020 = "2020 or later".
+                  # (Earlier samples used YBL with small integer codes; 2023
+                  # 5-Year uses YRBLT with year values.)
     "ACR",        # lot size (1 = <1 acre, 2 = 1-9.99 ac, 3 = 10+ ac)
     "AGS",        # sales of agricultural products (1 none, 2 = $1-999, 3 = $1k-2.5k, etc.)
     "TEL",        # telephone service (1 yes, 2 no)

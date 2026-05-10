@@ -24,6 +24,7 @@ const SUBCULTURES: Subculture[] = [
   { id: "crumbl_cookie_couple", name: "Crumbl cookie couple", vibe: "newlywed homeowners with a peace lily, a Tesla, and a Bachelor in Paradise watch-party tradition" },
   { id: "hill_people", name: "Toothless hill people", vibe: "acid-dropping libertarian racists with more guns than teeth" },
   { id: "crazy_person", name: "Crazy person on the bus", vibe: "yells at the bus stop, talks to themself on the way to nowhere in particular, isn't well, isn't OK" },
+  { id: "dad_2007", name: "Dad", vibe: "new-money California dad with the big 2000s house, the kids, the cars, and the ex" },
 ];
 
 export default function Home() {

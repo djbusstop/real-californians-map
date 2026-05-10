@@ -124,9 +124,9 @@ subcultures:
       - { field: TEN, op: eq, value: 3, weight: 2 } # renter
       - { field: BLD, op: in, value: [4, 5, 6, 7, 8, 9], weight: 3 } # multi-unit apartment
       - { field: BLD, op: in, value: [4, 5, 6], weight: 1.5 } # small/mid apartment buildings (2-9 units, NOT high-rise)
-      - { field: YBL, op: lte, value: 5, weight: 1.5 } # built before 1980
-      - { field: YBL, op: lte, value: 3, weight: 1 } # built before 1960
-      - { field: YBL, op: lte, value: 2, weight: 0.5 } # built before 1950 (pre-war)
+      - { field: YRBLT, op: lte, value: 1970, weight: 1.5 } # built 1970s or earlier (pre-1980)
+      - { field: YRBLT, op: lte, value: 1950, weight: 1 }   # built 1950s or earlier (pre-1960)
+      - { field: YRBLT, op: lte, value: 1940, weight: 0.5 } # built 1940s or earlier (pre-1950)
       - { field: BDSP, op: lte, value: 2, weight: 0.5 } # smaller unit (1-2 BR)
 
       # ───── Identity / diversity (race as soft signal — single documented exception) ─────
@@ -332,7 +332,7 @@ subcultures:
       # Housing — rural, old, marginal
       - { field: TEN, op: eq, value: 2, weight: 1.5 } # owned free and clear (paid off ages ago)
       - { field: HFL, op: in, value: [2, 4, 6], weight: 1.5 } # propane / oil / wood heat
-      - { field: YBL, op: lte, value: 5, weight: 1.5 } # built before 1980
+      - { field: YRBLT, op: lte, value: 1970, weight: 1.5 } # built 1970s or earlier (pre-1980)
       - { field: BLD, op: eq, value: 1, weight: 1.5 } # mobile home (soft, not required)
       - { field: ACR, op: eq, value: 3, weight: 1 } # 10+ acres extra
       - { field: VEH, op: gte, value: 1, weight: 0.5 } # has at least one vehicle (need a truck)
@@ -430,3 +430,80 @@ subcultures:
       contact and precarious housing." Geography expected: Tenderloin and Mission (SF), Skid Row
       and parts of Hollywood (LA), parts of East Oakland, central San Diego, downtown Sacramento,
       Stockton.
+
+  - id: dad_2007
+    name: Dad
+    vibe: new-money California dad with the big 2000s house, the kids, the cars, and the ex
+    # Wealthy mid-life dad of teens, 1990s-or-newer ~$1M+ detached house,
+    # mid-six-figure personal income, has been married before. Often
+    # works from home. Lot size and specific build decade are not gated:
+    # 1-9 acre lots are the exurban-California flavor but vanishingly
+    # rare in PUMS combined with $1M+ valuations, and pinning the build
+    # decade to 2000-2009 collapsed the cohort to zero gate-passers.
+    # Occupation and self-employment intentionally not encoded: cohort
+    # captures the household envelope and dad's life-stage, not his
+    # career path or property type.
+    tract_marginals:
+      - B19001_017E   # households with income $200k+ (top income band)
+      - B25075_024E   # owner-occupied units valued $1M-$1.5M
+      - B25034_010E   # housing built 2000-2009
+    vector:
+      # Hard gates: household envelope
+      - { field: VALP, op: gte, value: 1000000, weight: 2, required: true }     # property value >$1M
+      - { field: BDSP, op: gte, value: 4, weight: 1, required: true }            # 4+ bedrooms
+      - { field: BLD, op: eq, value: 2, weight: 1.5, required: true }            # detached single-family
+      - { field: TEN, op: eq, value: 1, weight: 1, required: true }              # owned with mortgage
+      - { field: YRBLT, op: gte, value: 1990, weight: 1, required: true }       # built 1990 or later
+      - { field: HUPAOC, op: eq, value: 3, weight: 1.5, required: true }         # own children 6-17 only
+
+      # Hard gates: dad
+      - { field: AGEP, op: range, value: [40, 55], weight: 1, required: true }   # mid-life
+      - { field: SEX, op: eq, value: 1, weight: 1, required: true }              # male
+      - { field: MAR, op: in, value: [1, 3], weight: 1, required: true }         # currently married or divorced (proxy for "has been married")
+      - { field: SCHL, op: gte, value: 21, weight: 1, required: true }           # bachelor's or higher
+      - { field: ESR, op: in, value: [1, 2], weight: 1, required: true }         # employed (or unemployed but in labor force)
+
+      # Soft signals: household
+      - { field: VEH, op: gte, value: 2, weight: 1 }       # multiple cars
+      - { field: VEH, op: gte, value: 3, weight: 0.5 }     # extra weight for 3+
+      - { field: MV, op: in, value: [1, 2], weight: 1 }    # moved in 0-4 years (proxy for "last 5 years")
+      - { field: BROADBND, op: eq, value: 1, weight: 0.5 } # broadband
+      - { field: LAPTOP, op: eq, value: 1, weight: 0.5 }   # laptop in household
+
+      # Soft signals: dad
+      - { field: PINCP, op: gte, value: 150000, weight: 2 }  # personal income $150k+
+      - { field: JWTRNS, op: eq, value: 11, weight: 1.5 }    # works from home (PUMS JWTRNS code 11)
+
+    proxy_gap: |
+      Operationalizes a wealthy mid-life California dad of school-age kids in
+      a 2000s-built detached house on 1-9 acres, owned with mortgage, with
+      mid-six-figure personal income and white-collar work-from-home patterns.
+      The household-side hard gates (property >$1M, 4+ bed, detached, lot
+      1-9 acres, built 2000s, kids 6-17 only) carry most of the geographic
+      signal; the person-side gates (male, 40-55, ever-married, bachelor's,
+      in the labor force) select the dad-shaped adult inside that household.
+
+      What PUMS cannot capture: the pool, the RV garage, royalty income as
+      a separate stream from self-employment income, "has been married before"
+      as distinct from currently divorced (PUMS has MARHT for marriage count
+      but it is not in our loaded variable set), specific field of degree
+      (FOD1P not loaded), and the cultural reads — the certainty that he is
+      smarter than anyone else in the room, the pattern of failed marriages,
+      the tendency toward toxic-masculine performance. The vector here
+      captures the structural skeleton — house, kids, mid-life, money,
+      education, working — not the person.
+
+      Year mismatch caveat: this cohort is scored against 2023 5-Year PUMS
+      (records pooled 2019-2023), not 2007 microdata. It finds present-day
+      households that demographically resemble the 2007 setup, anchored to
+      1990s-or-newer housing stock by the YRBLT gate (originally 2000-2009
+      specifically; widened to 1990+ because the tighter band collapsed the
+      cohort to zero gate-passers in CA PUMS).
+
+      Lot-size caveat: the original family had a 1-9 acre lot, but the
+      ACR=2 gate combined with VALP gte $1M was vanishingly rare in CA
+      PUMS (most $1M+ kid-having households sit on <1 acre suburban lots;
+      1-9 acre $1M+ households are largely exurban / wine-country / Sierra
+      foothills). The lot-size signal was dropped entirely rather than
+      softened, so the cohort now describes "wealthy 2000s-build California
+      dad" without the rural-property flavor.
