@@ -7,6 +7,7 @@ interface Props {
   subcultures: Subculture[];
   selected: string[];
   onToggle: (id: string) => void;
+  onClear: () => void;
   scores: Scores | null;
   isMobile?: boolean;
   open?: boolean;
@@ -16,6 +17,7 @@ export default function Sidebar({
   subcultures,
   selected,
   onToggle,
+  onClear,
   scores,
   isMobile = false,
   open = true,
@@ -100,7 +102,7 @@ export default function Sidebar({
         {selected.length} selected
         {selected.length > 0 && (
           <button
-            onClick={() => selected.forEach((id) => onToggle(id))}
+            onClick={onClear}
             style={{
               marginLeft: 8,
               background: "none",

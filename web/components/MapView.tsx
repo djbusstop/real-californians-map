@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, { Map as MlMap } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { Scores } from "@/app/page";
@@ -40,6 +40,12 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MlMap | null>(null);
   const beforeIdRef = useRef<string | undefined>(undefined);
+  // Flips true once the basemap has loaded and the dots source/layer are
+  // installed. The data-sync effect keys off this so it doesn't try to
+  // setData on a source that does not exist yet, and so it doesn't depend
+  // on isStyleLoaded() — which can flip false transiently during tile
+  // fetches and silently drop data updates if we gated on it.
+  const [mapReady, setMapReady] = useState(false);
 
   // Generate dots for all selected subcultures, each tagged with its subculture id.
   // Shuffle the combined feature array (Fisher-Yates) so that paint order is random
@@ -100,7 +106,12 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
       const beforeId = beforeIdRef.current;
 
       // Dots layer: single source/layer, color driven by `subculture` property.
-      map.addSource("dots", { type: "geojson", data: dots });
+      // Initialize the source empty; the data-sync effect populates it once
+      // mapReady is true. This avoids closing over a stale `dots` value here.
+      map.addSource("dots", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
       map.addLayer(
         {
           id: "dots-circle",
@@ -135,6 +146,7 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
         beforeId
       );
 
+      setMapReady(true);
     });
 
     return () => {
@@ -144,17 +156,20 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Push generated dots into the dots source whenever they change.
+  // Push generated dots into the dots source whenever they change. We gate
+  // on `mapReady` (set true inside the load handler above), so by the time
+  // this runs the source is guaranteed to exist. Calling setData directly
+  // is safe regardless of whether the basemap is mid-tile-load — we used
+  // to gate on isStyleLoaded(), which flips false transiently and caused
+  // updates to be queued onto a `load` event that never fired again,
+  // dropping them silently. That was the cause of stuck dots after clear.
   useEffect(() => {
+    if (!mapReady) return;
     const map = mapRef.current;
     if (!map) return;
-    const apply = () => {
-      const src = map.getSource("dots") as maplibregl.GeoJSONSource | undefined;
-      if (src) src.setData(dots);
-    };
-    if (map.isStyleLoaded()) apply();
-    else map.once("load", apply);
-  }, [dots]);
+    const src = map.getSource("dots") as maplibregl.GeoJSONSource | undefined;
+    if (src) src.setData(dots);
+  }, [dots, mapReady]);
 
 
 

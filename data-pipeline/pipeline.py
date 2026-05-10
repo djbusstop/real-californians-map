@@ -27,14 +27,17 @@ from __future__ import annotations
 import json
 import os
 import sys
+import warnings
 import zipfile
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import requests
 import yaml
+from scipy.optimize import nnls
 from tqdm import tqdm
 
 ROOT = Path(__file__).parent
@@ -43,6 +46,35 @@ CACHE = ROOT / "cache"
 CONFIG = ROOT / "subcultures.yaml"
 
 API_KEY = os.environ.get("CENSUS_API_KEY")  # optional
+
+# ----------------------------------------------------------------------------
+# Methodology constants — promoted to module-level so they're auditable and
+# tweakable from one place. See METHODOLOGY.md for the rationale of each.
+# ----------------------------------------------------------------------------
+
+# Ridge λ candidates for LOOCV. Log-spaced from near-OLS to heavy shrinkage.
+LAMBDA_GRID: list[float] = [0.0, 0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0]
+
+# LOOCV R² threshold to accept the regression. Below this, the cohort falls
+# back to equal-weight share-blend. Negative LOOCV R² means the model
+# generalizes worse than the unconditional mean.
+LOOCV_R2_THRESHOLD: float = 0.05
+
+# Conley spatial HAC bandwidth in kilometers. Fixed (not adaptive); see
+# METHODOLOGY.md "Diagnostics" subsection for the rationale.
+CONLEY_BANDWIDTH_KM: float = 75.0
+
+# Bootstrap iteration count for percentile-CI estimation per cohort.
+DEFAULT_N_BOOTSTRAP: int = 1000
+
+# Minimum number of successful bootstrap fits required before we report a CI.
+# Below this, we report NaN rather than risk a noisy percentile interval.
+BOOTSTRAP_MIN_FITS: int = 100
+
+# VIF "infinity" threshold. R² values above this are reported as VIF = inf
+# rather than 1/(1-R²); avoids float-noise artifacts on truly collinear pairs.
+VIF_INFINITY_THRESHOLD_R2: float = 1 - 1e-9
+
 
 # ----------------------------------------------------------------------------
 # Variable lists for the API pull. Keep these aligned with subcultures.yaml.
@@ -252,8 +284,15 @@ def fetch_pums() -> pd.DataFrame:
     if parquet_out.exists():
         print(f"[cache] loading {parquet_out}")
         df = pd.read_parquet(parquet_out)
-        # Cache must have replicate weights AND the full disability column set.
-        required_cols = ["PWGTP80", "DEAR", "DEYE", "DOUT", "DDRS"]
+        # Cache must have every column the pipeline expects today: replicate
+        # weights, all PERSON_VARS, and all HOUSING_VARS. Anything missing
+        # means the parquet predates a column-list change and we regenerate
+        # rather than silently scoring conditions on absent fields as zero.
+        required_cols = (
+            ["PWGTP80"]
+            + [c for c in PERSON_VARS if c != "SERIALNO"]
+            + [c for c in HOUSING_VARS if c != "SERIALNO"]
+        )
         missing = [c for c in required_cols if c not in df.columns]
         if not missing:
             return df
@@ -442,10 +481,26 @@ def fetch_tract_puma_crosswalk() -> pd.DataFrame:
 def fetch_acs_tract_marginal(var: str) -> dict:
     """Fetch one ACS variable for all CA tracts via the aggregated-tables API.
     Returns {tract_geoid: float}.
+
+    The cache is skipped if the API returns an entirely-zero response — some
+    detailed tables (e.g., B16001 detailed-language, B11009 same-sex partner
+    households) appear to be tract-level-suppressed in 2023 ACS 5-Year and
+    return all zeros from the public Detailed Tables API. Caching such a
+    response would silently break downstream cohorts whose marginals depend
+    on it, so we warn and refuse to cache. The next pipeline run will retry.
     """
     cached = CACHE / f"acs_tract_{var}.json"
     if cached.exists():
-        return json.loads(cached.read_text())
+        cached_data = json.loads(cached.read_text())
+        # Defensive: even if a previous run wrote a bad cache (e.g., from
+        # before this guard was added), surface the issue at load time.
+        if cached_data and not any(v != 0 for v in cached_data.values()):
+            print(
+                f"[warn] cached tract marginal {var} is 100% zeros; "
+                "possible tract-level suppression. Delete "
+                f"cache/acs_tract_{var}.json and re-run to retry."
+            )
+        return cached_data
 
     url = f"{ACS_API}?get=NAME,{var}&for=tract:*&in=state:06"
     print(f"[fetch] ACS tract var {var}")
@@ -464,8 +519,25 @@ def fetch_acs_tract_marginal(var: str) -> dict:
             out[geoid] = float(row[var_idx]) if row[var_idx] not in (None, "") else 0.0
         except (TypeError, ValueError):
             out[geoid] = 0.0
+
+    nonzero = sum(1 for v in out.values() if v != 0)
+    total = sum(out.values())
+    if out and nonzero == 0:
+        # All-zero response. Warn and refuse to cache so the next run retries
+        # rather than silently using the bad data forever.
+        print(
+            f"[warn] {var}: API returned {len(out):,} tracts, ALL ZEROS. "
+            "This usually indicates tract-level suppression for this table; "
+            "consider switching to a collapsed/published alternative (e.g., "
+            "C16001 instead of B16001). Not caching."
+        )
+        return out
+
     cached.write_text(json.dumps(out))
-    print(f"[fetch] {var}: {len(out):,} tract values, sum={sum(out.values()):,.0f}")
+    print(
+        f"[fetch] {var}: {len(out):,} tract values "
+        f"({nonzero:,} nonzero, sum={total:,.0f})"
+    )
     return out
 
 
@@ -586,10 +658,6 @@ def _fit_ridge_nnls(X_train, y_train, lam: float):
       X_aug = [X; √λ · I],   y_aug = [y; 0]
     and running NNLS (Lawson & Hanson 1974) on the augmented system.
     """
-    import warnings
-    import numpy as np
-    from scipy.optimize import nnls
-
     n_f = X_train.shape[1]
     sqrt_lam = np.sqrt(max(lam, 0.0))
     X_aug = np.vstack([X_train, sqrt_lam * np.eye(n_f)])
@@ -618,8 +686,6 @@ def _estimate_sigma2_u_prasad_rao(
     where m is the number of areas and p is the number of parameters.
     Reference: Prasad & Rao 1990, *JASA* 85(409), 163-171.
     """
-    import numpy as np
-
     m = len(y)
     p = X.shape[1]
     if m <= p:
@@ -642,8 +708,6 @@ def _compute_eblup(y, X, beta, sigma2_e, sigma2_u):
 
     Returns (eblup_predictions, gamma_per_area).
     """
-    import numpy as np
-
     synthetic = X @ beta
     direct_residual = y - synthetic
     denom = sigma2_u + sigma2_e
@@ -652,7 +716,7 @@ def _compute_eblup(y, X, beta, sigma2_e, sigma2_u):
     return eblup, gamma
 
 
-def _compute_conley_se(X_z, residuals, lam, puma_ids, centroids, bandwidth_km=75.0):
+def _compute_conley_se(X_z, residuals, lam, puma_ids, centroids, bandwidth_km=CONLEY_BANDWIDTH_KM):
     """Conley spatial HAC standard errors (Conley 1999, *J. Econometrics* 92).
 
     Computes V = (X'X + λI)⁻¹ · X' Ω X · (X'X + λI)⁻¹ where Ω is the
@@ -667,8 +731,6 @@ def _compute_conley_se(X_z, residuals, lam, puma_ids, centroids, bandwidth_km=75
     for any coefficient that hit the boundary β = 0 (whose effective SE is
     degenerate); the bootstrap procedure is the rigorous companion estimate.
     """
-    import numpy as np
-
     n, p = X_z.shape
     if len(puma_ids) != n or not centroids:
         return [float("nan")] * p
@@ -696,7 +758,9 @@ def _compute_conley_se(X_z, residuals, lam, puma_ids, centroids, bandwidth_km=75
     # The sandwich matmul chain can produce extreme intermediate values for
     # tightly-gated cohorts where many residuals are zero or near-zero. Outputs
     # are clipped to non-negative (variance can't be negative) and any non-finite
-    # diagonal element is reported as NaN, so the warnings are cosmetic.
+    # diagonal element is replaced with 0 before the sqrt, so the SE for that
+    # coefficient is reported as 0.0 rather than NaN. The bootstrap CI is the
+    # rigorous companion estimate when this happens.
     with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
         XtX_lam_inv = np.linalg.pinv(X_z.T @ X_z + lam * np.eye(p))
         V = XtX_lam_inv @ X_z.T @ Omega @ X_z @ XtX_lam_inv
@@ -707,7 +771,7 @@ def _compute_conley_se(X_z, residuals, lam, puma_ids, centroids, bandwidth_km=75
 
 
 def _compute_bootstrap_ci(
-    Xz, y_centered, lam, n_bootstrap=1000, alpha=0.05, seed=42
+    Xz, y_centered, lam, n_bootstrap=DEFAULT_N_BOOTSTRAP, alpha=0.05, seed=42
 ):
     """Non-parametric percentile bootstrap confidence intervals for ridge+NNLS
     coefficients (Efron & Tibshirani 1993, *An Introduction to the Bootstrap*).
@@ -727,8 +791,6 @@ def _compute_bootstrap_ci(
 
     Returns (ci_lower, ci_upper) as lists of length p.
     """
-    import numpy as np
-
     rng = np.random.default_rng(seed)
     n, p = Xz.shape
     coef_samples = np.zeros((n_bootstrap, p))
@@ -744,7 +806,7 @@ def _compute_bootstrap_ci(
     # Drop any failed fits before computing percentiles.
     mask = ~np.isnan(coef_samples).any(axis=1)
     coef_samples = coef_samples[mask]
-    if len(coef_samples) < 100:
+    if len(coef_samples) < BOOTSTRAP_MIN_FITS:
         return [float("nan")] * p, [float("nan")] * p
 
     lower = np.percentile(coef_samples, 100 * alpha / 2, axis=0)
@@ -756,9 +818,10 @@ def _compute_vifs(Xz):
     """Variance Inflation Factors for each column of standardized design matrix Xz.
     VIF_j = 1 / (1 - R²_j) where R²_j is the R² from regressing column j on the rest.
     VIF > 10 conventionally indicates problematic multicollinearity (Belsley et al. 1980).
-    """
-    import numpy as np
 
+    For columns whose R² with the others is at or above VIF_INFINITY_THRESHOLD_R2,
+    we report VIF = inf rather than computing a noisy 1/(1-R²) near machine epsilon.
+    """
     n_features = Xz.shape[1]
     vifs = []
     for j in range(n_features):
@@ -772,7 +835,10 @@ def _compute_vifs(Xz):
             ss_res = float(np.sum((Xz[:, j] - x_pred) ** 2))
             ss_tot = float(np.sum(Xz[:, j] ** 2))  # already mean-zero
             r2_j = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
-            vifs.append(float(1.0 / (1.0 - r2_j)) if r2_j < 0.9999 else float("inf"))
+            if r2_j < VIF_INFINITY_THRESHOLD_R2:
+                vifs.append(float(1.0 / (1.0 - r2_j)))
+            else:
+                vifs.append(float("inf"))
         except Exception:
             vifs.append(float("nan"))
     return vifs
@@ -786,7 +852,7 @@ def fit_area_level_model(
     spatial_weights: dict[str, list[str]] | None = None,
     puma_score_variance: dict[str, float] | None = None,
     puma_centroids: dict[str, tuple[float, float]] | None = None,
-    n_bootstrap: int = 1000,
+    n_bootstrap: int = DEFAULT_N_BOOTSTRAP,
 ) -> dict | None:
     """Fit area-level synthetic SAE model (Fay-Herriot family) with NNLS+Ridge.
 
@@ -806,8 +872,6 @@ def fit_area_level_model(
     diagnostics (R², LOOCV R², residual std, VIF per predictor, condition
     number, optional Moran's I on residuals if spatial_weights given).
     """
-    import numpy as np
-
     pumas_aligned = sorted(set(puma_scores) & set(puma_pop))
     if len(pumas_aligned) < 8:
         return None
@@ -842,21 +906,30 @@ def fit_area_level_model(
     y_mean = float(y.mean())
     y_centered = y - y_mean
 
-    # Cross-validate ridge λ by leave-one-PUMA-out.
-    # Log-spaced grid covers regimes from near-OLS (λ≈0) to heavy shrinkage.
-    lam_grid = [0.0, 0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0]
+    # Cross-validate ridge λ by leave-one-PUMA-out across the log-spaced grid
+    # defined as a module constant. Range covers near-OLS (λ≈0) to heavy shrinkage.
+    lam_grid = LAMBDA_GRID
     n_obs = Xz.shape[0]
     cv_scores: dict[float, float] = {}
+    # Track failures per λ. When a leave-one-out fit returns None, we record
+    # y_mean as the held-out prediction (the null model) so the LOOCV R²
+    # can still be computed, but we count the failure. Cohorts where many
+    # splits fail at the chosen λ get their LOOCV R² flagged as unreliable
+    # in the model summary so a reviewer is not misled by a result that
+    # came partly from null-model fallbacks.
+    cv_failed: dict[float, int] = {}
     best_lam = 0.0
     best_loocv = -float("inf")
 
     for lam in lam_grid:
         loo_preds = np.zeros(n_obs)
+        n_failed = 0
         for i in range(n_obs):
             mask = np.ones(n_obs, dtype=bool)
             mask[i] = False
             coefs_i = _fit_ridge_nnls(Xz[mask], y_centered[mask], lam)
             if coefs_i is None:
+                n_failed += 1
                 loo_preds[i] = y_mean
             else:
                 loo_preds[i] = float(Xz[i] @ coefs_i + y_mean)
@@ -864,6 +937,7 @@ def fit_area_level_model(
         ss_tot = float(np.sum((y - y_mean) ** 2))
         loocv_r2 = 1 - ss_res_loo / ss_tot if ss_tot > 0 else 0.0
         cv_scores[lam] = loocv_r2
+        cv_failed[lam] = n_failed
         if loocv_r2 > best_loocv:
             best_loocv = loocv_r2
             best_lam = lam
@@ -952,11 +1026,18 @@ def fit_area_level_model(
             Xz, y_centered, best_lam, n_bootstrap=n_bootstrap
         )
 
+    # Count of leave-one-out splits at the chosen λ where the constrained NNLS+Ridge
+    # solver returned None and the held-out prediction fell back to the unconditional
+    # mean. Exposed as an engineering diagnostic for cohorts where the solver is
+    # unstable on small held-in samples; not a methodological reliability claim.
+    loocv_failed_at_best = int(cv_failed.get(best_lam, 0))
+
     return {
         "method": "ridge_nnls",
         "n_pumas": int(n_obs),
         "lambda": float(best_lam),
         "lambda_cv_grid": {f"{k:g}": float(v) for k, v in cv_scores.items()},
+        "lambda_cv_failed": {f"{k:g}": int(v) for k, v in cv_failed.items()},
         "feature_names": feature_names,
         "coefs": [float(c) for c in coefs],
         "feature_means": [float(m) for m in X_means],
@@ -964,6 +1045,7 @@ def fit_area_level_model(
         "y_mean": float(y_mean),
         "r_squared": float(r_squared),
         "loocv_r_squared": float(best_loocv),
+        "loocv_failed_splits": loocv_failed_at_best,
         "residual_std": float(np.std(residuals, ddof=1)),
         "vif": [float(v) for v in vifs],
         "condition_number": cond_number,
@@ -1086,7 +1168,6 @@ def compute_morans_i(
     indicates the linear model is missing geographic structure — a quantitative
     geographer's first diagnostic for a spatial regression.
     """
-    import numpy as np
     from math import erfc, sqrt
 
     n = len(residuals)
@@ -1147,7 +1228,7 @@ def distribute_to_tracts(
     spatial_weights: dict[str, list[str]] | None = None,
     puma_score_variance: dict[str, dict[str, float]] | None = None,
     puma_centroids: dict[str, tuple[float, float]] | None = None,
-    n_bootstrap: int = 1000,
+    n_bootstrap: int = DEFAULT_N_BOOTSTRAP,
 ) -> tuple[dict, dict]:
     """Distribute PUMA-level cohort scores to tracts via area-level SAE.
 
@@ -1182,10 +1263,6 @@ def distribute_to_tracts(
 
     out: dict[str, dict[str, float]] = {}
     summaries: dict[str, dict] = {}
-
-    # LOOCV R² threshold to accept the regression. Negative LOOCV means the
-    # model generalizes worse than the mean — we fall back to share-blend.
-    LOOCV_THRESHOLD = 0.05
 
     for sub_id in sorted(sub_ids):
         marginals_list = tract_marginals_by_cohort.get(sub_id, [])
@@ -1239,7 +1316,7 @@ def distribute_to_tracts(
                 return float(eblup_by_puma[p])
             return float(cohort_puma_scores.get(p, 0.0))
 
-        if model and model.get("loocv_r_squared", -1) >= LOOCV_THRESHOLD:
+        if model and model.get("loocv_r_squared", -1) >= LOOCV_R2_THRESHOLD:
             # Predict tract-level raw counts, then rake within each PUMA.
             feature_means = model["feature_means"]
             feature_stds = model["feature_stds"]
@@ -1300,7 +1377,7 @@ def distribute_to_tracts(
             if model:
                 fallback_reason = (
                     f"loocv_r_squared={model.get('loocv_r_squared'):.3f} below "
-                    f"threshold {LOOCV_THRESHOLD}"
+                    f"threshold {LOOCV_R2_THRESHOLD}"
                 )
             elif not marginals_list:
                 fallback_reason = "no marginals declared"
@@ -1323,13 +1400,30 @@ def distribute_to_tracts(
 # Scoring
 # ----------------------------------------------------------------------------
 
+# Track unknown fields seen during scoring so we warn once per field per run
+# rather than spamming for every cohort that uses the same typo.
+_UNKNOWN_FIELDS_WARNED: set[str] = set()
+
+
 def _eval_condition(df: pd.DataFrame, cond: dict) -> pd.Series:
-    """Returns a 0..1 Series indicating how well each row satisfies the condition."""
+    """Returns a 0..1 Series indicating how well each row satisfies the condition.
+
+    If the named field is not in the DataFrame, returns all zeros (so the
+    cohort still scores) but prints a warning once per unique missing field.
+    Common cause: a typo in subcultures.yaml (e.g., AGEPP for AGEP).
+    """
     if cond.get("computed") == "modal":
         # Special-cased upstream.
         return pd.Series(0.0, index=df.index)
     field = cond["field"]
     if field not in df.columns:
+        if field not in _UNKNOWN_FIELDS_WARNED:
+            print(
+                f"[warn] field '{field}' not in PUMS DataFrame columns. "
+                "All conditions referencing this field will score 0. "
+                "Check spelling in subcultures.yaml against PERSON_VARS / HOUSING_VARS."
+            )
+            _UNKNOWN_FIELDS_WARNED.add(field)
         return pd.Series(0.0, index=df.index)
     series = df[field]
     op = cond["op"]
@@ -1386,9 +1480,6 @@ def score_subculture(df: pd.DataFrame, sub: dict) -> pd.Series:
     Required conditions act as gates (return 0 if not satisfied).
     Other conditions sum weighted contributions, normalized to 0..1.
     """
-    if sub["id"] == "normie":
-        return _score_normie(df)
-
     gate = pd.Series(True, index=df.index)
     score = pd.Series(0.0, index=df.index)
     weight_total = 0.0
@@ -1405,22 +1496,6 @@ def score_subculture(df: pd.DataFrame, sub: dict) -> pd.Series:
         return pd.Series(0.0, index=df.index)
     score = score / weight_total
     return score.where(gate, 0.0)
-
-
-def _score_normie(df: pd.DataFrame) -> pd.Series:
-    """Normie = similarity to the modal trait combination across all CA records.
-    For v0, approximate by computing the mode of a few key traits and scoring on match."""
-    keys = ["AGEP", "TEN", "HHT", "MAR", "SCHL"]
-    # Bucket age into decades for "mode" purposes.
-    df = df.copy()
-    df["AGEP_BUCKET"] = (df["AGEP"] // 10) * 10
-    keys = ["AGEP_BUCKET", "TEN", "HHT", "MAR", "SCHL"]
-    modes = {k: df[k].mode().iloc[0] for k in keys if k in df.columns}
-    score = pd.Series(0.0, index=df.index)
-    for k, v in modes.items():
-        score += (df[k] == v).astype(float)
-    score = score / len(modes) if modes else score
-    return score
 
 
 def aggregate_to_puma(df: pd.DataFrame, scores: dict[str, pd.Series]) -> dict:
@@ -1591,7 +1666,7 @@ def main() -> None:
         spatial_weights=spatial_weights,
         puma_score_variance=puma_score_variance if puma_score_variance else None,
         puma_centroids=puma_centroids if puma_centroids else None,
-        n_bootstrap=1000,
+        n_bootstrap=DEFAULT_N_BOOTSTRAP,
     )
     out_tract_scores = DATA / "tract_scores.json"
     out_tract_scores.write_text(json.dumps(tract_scores))

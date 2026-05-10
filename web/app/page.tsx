@@ -68,6 +68,12 @@ export default function Home() {
     );
   };
 
+  // Clear in one state update rather than fanning out N toggle calls.
+  // The latter relies on React's batching to compose correctly and
+  // forces the dot useMemo and source.setData to run N times instead
+  // of once on what is conceptually a single user action.
+  const clear = () => setSelected([]);
+
   if (loadError) {
     return (
       <div style={{ padding: 24 }}>
@@ -87,6 +93,7 @@ export default function Home() {
         subcultures={SUBCULTURES}
         selected={selected}
         onToggle={toggle}
+        onClear={clear}
         scores={scores}
         isMobile={isMobile}
         open={sidebarOpen}
