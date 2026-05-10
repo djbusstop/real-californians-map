@@ -27,38 +27,24 @@ subcultures:
   - id: queer_leftist
     name: Queer leftist
     vibe: takes the bus to therapy. hates capitalism but isn't bad at it
-    # Trait vector tuned for partnered queer leftists across the income
-    # spectrum: arts / social service / education / public-facing service
-    # occupations (STEM down-weighted to remove Silicon Valley bias),
-    # part-time bonused but full-time acceptable, broad middle-class income
-    # range that includes nurses / public defenders / educators, strong
-    # flatshare-or-partnered signal, mobility neutral. An earlier vector
-    # over-emphasized full-time STEM workers in apartments and pulled the
-    # cohort to Silicon Valley; a subsequent over-correction emphasized
-    # part-time creative-renters too narrowly and undersized the cohort.
-    # Current vector sits between those two and should land queer leftists
-    # in SF Mission/Castro, Oakland, Hollywood/Silverlake/Echo Park, Long
-    # Beach, and central Sacramento at τ = 0.5.
-    threshold: 0.5
-    # Marginals are inputs to NNLS+Ridge regression (see METHODOLOGY.md).
-    # Coefficients are fit from data; this list is just the candidate covariates.
-    # Note: B11009 (same-sex households) is suppressed at tract level in
-    # 2023 ACS 5-Year, so we use B11001_006E (nonfamily households) as the
-    # tract-level proxy for queer-coded household geography. The trait vector
-    # still hard-gates on SAME_SEX = 1 at the PUMS person-record level.
-    # B25024 unit-size buckets span apartment-building geography from small
-    # triplex to high-rise; ridge picks weights from data.
+    # Queer-coded leftist lifestyle: creative / social-service / education
+    # occupations, transit-no-car, urban renter, college-educated, part-time-
+    # bonused. SAME_SEX = 1 is a heavy soft signal but not gated — only ~20%
+    # of LGBTQ adults are in same-sex households at any time, so a hard
+    # gate would render the single-LGBTQ majority invisible.
+    threshold: 0.45
     tract_marginals:
       - B11001_006E # nonfamily households (single adults, roommates, unmarried partners)
       - B25024_005E # 3-4 unit apartment buildings (small)
       - B25024_006E # 5-9 unit apartment buildings (mid)
-      - B25034_011E # housing units built 1939 or earlier (pre-war / rent-controlled urban geography)
+      - B08301_010E # workers commuting by public transportation excl. taxi (transit-rich queer-leftist geography)
     vector:
       # ───── Hard gates ─────
-      - { field: SAME_SEX, op: eq, value: 1, weight: 4, required: true } # queer (must be in a same-sex household)
+      - { field: SAME_SEX, op: eq, value: 1, weight: 6 } # queer signal (heavy soft, see header)
       - { field: AGEP, op: range, value: [18, 40], weight: 1.5, required: true } # 18-40
       - { field: SCHL, op: gte, value: 19, weight: 1.5, required: true } # some college or higher (admits baristas, service workers)
       - { field: SCHL, op: gte, value: 21, weight: 1 } # bachelor's+ (extra weight for the educated subset)
+      - { field: SCH, op: in, value: [2, 3], weight: 2.5 } # currently enrolled in school (queer leftists skew student)
       - { field: LAPTOP, op: eq, value: 1, weight: 1.5, required: true } # has a computer in the household
       - { field: BROADBND, op: eq, value: 1, weight: 1, required: true } # has internet at home
       - { field: ESR, op: in, value: [1, 2, 3], weight: 1, required: true } # not retired
@@ -120,49 +106,28 @@ subcultures:
       - { field: MIG, op: eq, value: 1, weight: 0.5 } # same house a year ago (settled is OK, small bonus)
       - { field: MV, op: in, value: [1, 2], weight: 0.5 } # moved within last 4 years (urban migration flow)
 
-      # ───── Housing: renter, multi-unit, older building ─────
+      # ───── Housing: renter, dense urban, older building ─────
       - { field: TEN, op: eq, value: 3, weight: 2 } # renter
-      - { field: BLD, op: in, value: [4, 5, 6, 7, 8, 9], weight: 3 } # multi-unit apartment
-      - { field: BLD, op: in, value: [4, 5, 6], weight: 1.5 } # small/mid apartment buildings (2-9 units, NOT high-rise)
-      - { field: YRBLT, op: lte, value: 1970, weight: 1.5 } # built 1970s or earlier (pre-1980)
-      - { field: YRBLT, op: lte, value: 1950, weight: 1 }   # built 1950s or earlier (pre-1960)
-      - { field: YRBLT, op: lte, value: 1940, weight: 0.5 } # built 1940s or earlier (pre-1950)
+      - { field: BLD, op: in, value: [3, 4, 5, 6, 7, 8, 9], weight: 1.5 } # any dense urban housing (attached SFH through high-rise)
+      - { field: BLD, op: in, value: [3, 4, 5, 6], weight: 0.5 } # small-scale (townhouse, duplex, small apt — extra small bonus)
+      - { field: YRBLT, op: lte, value: 1970, weight: 1.5 } # built 1970s or earlier
+      - { field: YRBLT, op: lte, value: 1950, weight: 0.5 } # built 1950s or earlier (extra small bonus)
       - { field: BDSP, op: lte, value: 2, weight: 0.5 } # smaller unit (1-2 BR)
 
       # ───── Identity / diversity (race as soft signal — single documented exception) ─────
       - { field: RAC1P, op: in, value: [2, 3, 4, 5, 6, 7, 8, 9], weight: 1 } # non-white identity (queer-leftist communities skew non-white in CA)
       - { field: HISP, op: gte, value: 2, weight: 0.5 } # Hispanic origin
     proxy_gap: |
-      Operationalized as: queer (SAME_SEX = 1, hard gate) + 18-40 + some-college-or-higher
-      + computer + broadband + recent-work + part-time hours + lower-middle income +
-      flatshare-or-partnered + no kids, not married + arts/social-service/education-leaning
-      occupation (NOT STEM, deliberately down-weighted to remove Silicon Valley bias) +
-      transit-and-no-car + recent mover + multi-unit older urban housing + Medi-Cal-leaning
-      health coverage + over-represented for cognitive/mental-health difficulty.
-
-      The vector deliberately captures the *creatively under-employed* register rather than the
-      *stable-middle-class-professional* register. Earlier versions of this vector rewarded
-      full-time work (WKHP gte 35) and middle-class income (HINCP 60k-150k), which biased the
-      cohort toward full-time STEM and professional workers in dense apartments — i.e., young
-      Silicon Valley tech workers — pulling allocation to the South Bay. The current vector
-      inverts that, rewarding part-time hours, lower-middle income, public health coverage, and
-      arts/social-service occupations.
-
-      "Leftist" is not measured — it's inferred from the helping-profession + non-car +
-      pre-war-housing + nonprofit-or-government employment + part-time-work correlation.
-      "Goes to queer comic book stores" is genuinely unmeasurable in census data. The closest
-      proxies are *arts/creative occupation* + *educational attainment* + *urban older-apartment
-      housing*, all of which the vector captures. The cultural distinction between the comic-book-
-      store goer, the gallery goer, and the indie-bookstore goer lives in cultural performance,
-      not demographic position, and cannot be recovered from PUMS.
-
-      Single LGBTQ people are invisible in the SAME_SEX household proxy (the cohort is the
-      partnered queer leftist subset). The DREM weight encodes the well-documented mental-
-      health-difficulty correlation in LGBTQ populations (Meyer 2003, "minority stress model")
-      but DREM is a broader census flag than psychiatric diagnosis. Politics, religious
-      affiliation, and cultural consumption patterns are not capturable. The CA non-white-
-      identity weight is the single documented exception to the no-race-gating principle
-      (see Modeling constraints in METHODOLOGY).
+      "Leftist" and "queer" are both inferred, not measured. SAME_SEX = 1
+      (heavy soft) catches partnered queer records; the lifestyle bundle
+      (creative or social-service occupation, no-car-urban-renter, part-time-
+      bonused, DREM, nonfamily household, college enrolment) catches single
+      LGBTQ records and lifestyle-aligned leftist allies. Cultural performance,
+      politics, and religion are not capturable in PUMS. The DREM weight
+      encodes the LGBTQ minority-stress correlation (Meyer 2003) but is
+      broader than psychiatric diagnosis. The CA non-white-identity weight
+      is the single documented exception to the no-race-gating principle
+      (see METHODOLOGY).
 
   - id: married_gays
     name: Married gays
@@ -434,15 +399,9 @@ subcultures:
   - id: dad_2007
     name: Dad
     vibe: new-money California dad with the big 2000s house, the kids, the cars, and the ex
-    # Wealthy mid-life dad of teens, 1990s-or-newer ~$1M+ detached house,
-    # mid-six-figure personal income, has been married before. Often
-    # works from home. Lot size and specific build decade are not gated:
-    # 1-9 acre lots are the exurban-California flavor but vanishingly
-    # rare in PUMS combined with $1M+ valuations, and pinning the build
-    # decade to 2000-2009 collapsed the cohort to zero gate-passers.
-    # Occupation and self-employment intentionally not encoded: cohort
-    # captures the household envelope and dad's life-stage, not his
-    # career path or property type.
+    # Wealthy mid-life dad of teens, 1990s+ ~$1M+ detached house, mid-
+    # six-figure personal income, has been married before, often works
+    # from home. Occupation and self-employment intentionally not encoded.
     tract_marginals:
       - B19001_017E   # households with income $200k+ (top income band)
       - B25075_024E   # owner-occupied units valued $1M-$1.5M
@@ -475,35 +434,13 @@ subcultures:
       - { field: JWTRNS, op: eq, value: 11, weight: 1.5 }    # works from home (PUMS JWTRNS code 11)
 
     proxy_gap: |
-      Operationalizes a wealthy mid-life California dad of school-age kids in
-      a 2000s-built detached house on 1-9 acres, owned with mortgage, with
-      mid-six-figure personal income and white-collar work-from-home patterns.
-      The household-side hard gates (property >$1M, 4+ bed, detached, lot
-      1-9 acres, built 2000s, kids 6-17 only) carry most of the geographic
-      signal; the person-side gates (male, 40-55, ever-married, bachelor's,
-      in the labor force) select the dad-shaped adult inside that household.
-
-      What PUMS cannot capture: the pool, the RV garage, royalty income as
-      a separate stream from self-employment income, "has been married before"
-      as distinct from currently divorced (PUMS has MARHT for marriage count
-      but it is not in our loaded variable set), specific field of degree
-      (FOD1P not loaded), and the cultural reads — the certainty that he is
-      smarter than anyone else in the room, the pattern of failed marriages,
-      the tendency toward toxic-masculine performance. The vector here
-      captures the structural skeleton — house, kids, mid-life, money,
-      education, working — not the person.
-
-      Year mismatch caveat: this cohort is scored against 2023 5-Year PUMS
-      (records pooled 2019-2023), not 2007 microdata. It finds present-day
-      households that demographically resemble the 2007 setup, anchored to
-      1990s-or-newer housing stock by the YRBLT gate (originally 2000-2009
-      specifically; widened to 1990+ because the tighter band collapsed the
-      cohort to zero gate-passers in CA PUMS).
-
-      Lot-size caveat: the original family had a 1-9 acre lot, but the
-      ACR=2 gate combined with VALP gte $1M was vanishingly rare in CA
-      PUMS (most $1M+ kid-having households sit on <1 acre suburban lots;
-      1-9 acre $1M+ households are largely exurban / wine-country / Sierra
-      foothills). The lot-size signal was dropped entirely rather than
-      softened, so the cohort now describes "wealthy 2000s-build California
-      dad" without the rural-property flavor.
+      Captures the structural skeleton — wealthy mid-life California dad of
+      school-age kids in a 1990s+ detached $1M+ house with mid-six-figure
+      income, often working from home — not the person. PUMS lacks pool,
+      RV garage, royalty income separately from self-employment, "married
+      before" as distinct from currently divorced (MARHT not loaded), and
+      field of degree (FOD1P not loaded). Cultural reads (smartest-in-the-
+      room, pattern of failed marriages, toxic-masc performance) are
+      unmeasurable. Scored against 2023 5-Year PUMS, not 2007 microdata;
+      finds present-day households resembling the 2007 setup, anchored to
+      1990s+ stock via YRBLT.
