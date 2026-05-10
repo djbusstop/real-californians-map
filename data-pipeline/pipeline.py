@@ -12,8 +12,13 @@ Run:
 Outputs (in ./data/):
     pums_ca.parquet         - merged person+household records with weights
     pumas_ca.geojson        - PUMA boundaries (2020 vintage)
-    scores.json             - { puma: { subculture_id: weighted_population } }
-    summary.json            - per-subculture totals + sanity checks
+    scores.json             - { puma: { subculture_id: weighted_member_count } }
+                              The PUMA-level count of cohort members under
+                              the threshold-based membership rule.
+    scores_variance.json    - { puma: { subculture_id: SDR_variance_of_count } }
+    summary.json            - per-subculture member counts + secondary
+                              diagnostics (threshold, gate-pass count,
+                              soft total, mean fit per member)
 
 Cache: raw API responses are cached in ./cache/ so re-runs are fast. Delete cache/
 to force a fresh fetch.
@@ -74,6 +79,13 @@ BOOTSTRAP_MIN_FITS: int = 100
 # VIF "infinity" threshold. R² values above this are reported as VIF = inf
 # rather than 1/(1-R²); avoids float-noise artifacts on truly collinear pairs.
 VIF_INFINITY_THRESHOLD_R2: float = 1 - 1e-9
+
+# Default membership threshold τ. A PUMS record counts as a cohort member iff
+# every `required: true` condition in the trait vector passes AND the soft
+# similarity score is at or above this threshold. Override per cohort by
+# adding `threshold:` to the cohort entry in subcultures.yaml. See
+# METHODOLOGY.md "Scoring" for rationale.
+DEFAULT_MEMBERSHIP_THRESHOLD: float = 0.5
 
 
 # ----------------------------------------------------------------------------
@@ -1475,10 +1487,22 @@ def _eval_condition(df: pd.DataFrame, cond: dict) -> pd.Series:
     raise ValueError(f"Unknown operator: {op}")
 
 
-def score_subculture(df: pd.DataFrame, sub: dict) -> pd.Series:
-    """Compute a similarity score per record for one subculture.
-    Required conditions act as gates (return 0 if not satisfied).
-    Other conditions sum weighted contributions, normalized to 0..1.
+def score_subculture(df: pd.DataFrame, sub: dict) -> tuple[pd.Series, pd.Series]:
+    """Compute the gate indicator and the soft similarity score per record.
+
+    Returns
+    -------
+    gate : pd.Series[bool]
+        True if every `required: true` condition passes for the record.
+    fit_score : pd.Series[float]
+        Weighted soft similarity in [0, 1]. Zero for records whose gates
+        fail. The numerator sums `weight × match` over every condition
+        (required and soft); the denominator is the sum of weights, so the
+        score lies in [0, 1] for any gate-passing record.
+
+    Membership is then derived elsewhere via `compute_membership()`, which
+    applies the cohort's threshold τ to the fit score. See METHODOLOGY.md
+    "Scoring" for the membership rule.
     """
     gate = pd.Series(True, index=df.index)
     score = pd.Series(0.0, index=df.index)
@@ -1493,18 +1517,37 @@ def score_subculture(df: pd.DataFrame, sub: dict) -> pd.Series:
         weight_total += weight
 
     if weight_total == 0:
-        return pd.Series(0.0, index=df.index)
-    score = score / weight_total
-    return score.where(gate, 0.0)
+        return gate, pd.Series(0.0, index=df.index)
+    fit_score = (score / weight_total).where(gate, 0.0)
+    return gate, fit_score
 
 
-def aggregate_to_puma(df: pd.DataFrame, scores: dict[str, pd.Series]) -> dict:
-    """Weight scores by person weight (PWGTP), sum per PUMA, and return:
-    { puma_code: { subculture_id: weighted_population_score } }
+def compute_membership(
+    gate: pd.Series, fit_score: pd.Series, threshold: float
+) -> pd.Series:
+    """Binary cohort membership indicator per record.
+
+    A record counts as a cohort member iff (a) every `required: true`
+    condition passes (gate = True) AND (b) the soft fit score is at or
+    above threshold. Returned as float (0.0 / 1.0) for compatibility with
+    downstream PWGTP-weighted aggregation.
+    """
+    return (gate & (fit_score >= threshold)).astype(float)
+
+
+def aggregate_to_puma(df: pd.DataFrame, indicators: dict[str, pd.Series]) -> dict:
+    """Weight per-record indicator series by person weight (PWGTP), sum per
+    PUMA, and return:
+        { puma_code: { subculture_id: weighted_count } }
+
+    With membership as the input indicator, the output is the weighted
+    population count of cohort members per PUMA, a well-defined population
+    total. The function also handles continuous indicators (e.g., the soft
+    fit score) for secondary-diagnostic aggregation.
     """
     out: dict[str, dict[str, float]] = {}
-    for sub_id, score in scores.items():
-        weighted = score * df["PWGTP"]
+    for sub_id, indicator in indicators.items():
+        weighted = indicator * df["PWGTP"]
         per_puma = weighted.groupby(df["PUMA"]).sum()
         for puma, val in per_puma.items():
             out.setdefault(str(puma), {})[sub_id] = round(float(val), 1)
@@ -1512,7 +1555,7 @@ def aggregate_to_puma(df: pd.DataFrame, scores: dict[str, pd.Series]) -> dict:
 
 
 def aggregate_to_puma_variance(
-    df: pd.DataFrame, scores: dict[str, pd.Series]
+    df: pd.DataFrame, indicators: dict[str, pd.Series]
 ) -> dict[str, dict[str, float]]:
     """Compute the sampling variance of each PUMA-level cohort estimate via
     the Census-published successive-difference replication (SDR) formula:
@@ -1523,7 +1566,11 @@ def aggregate_to_puma_variance(
     Reference: Wolter 2007, *Introduction to Variance Estimation*, 2nd ed.,
     Springer, §3.7; Census Bureau, *PUMS Accuracy of the Data* (2023).
 
-    Returns: { puma_code: { subculture_id: sampling_variance_of_score } }.
+    With binary cohort membership indicators as input, this is the SDR
+    variance of a population total (count of cohort members in each PUMA),
+    the canonical use case for the formula.
+
+    Returns: { puma_code: { subculture_id: sampling_variance_of_count } }.
     """
     if "PWGTP1" not in df.columns:
         # Replicate weights weren't loaded; cannot estimate sampling variance.
@@ -1537,13 +1584,13 @@ def aggregate_to_puma_variance(
     out: dict[str, dict[str, float]] = {}
     puma_index = df["PUMA"].astype(str)
 
-    for sub_id, score in scores.items():
-        # Main estimate per PUMA.
-        main_per_puma = (score * df["PWGTP"]).groupby(puma_index).sum()
+    for sub_id, indicator in indicators.items():
+        # Main estimate per PUMA (count of members under PWGTP).
+        main_per_puma = (indicator * df["PWGTP"]).groupby(puma_index).sum()
         # 80 replicate estimates per PUMA.
         rep_per_puma = pd.DataFrame(index=main_per_puma.index)
         for r_col in rep_cols:
-            rep_per_puma[r_col] = (score * df[r_col]).groupby(puma_index).sum()
+            rep_per_puma[r_col] = (indicator * df[r_col]).groupby(puma_index).sum()
         # SDR variance with finite-population correction factor 4/80.
         squared_dev = rep_per_puma.subtract(main_per_puma, axis=0).pow(2)
         var_per_puma = (4.0 / len(rep_cols)) * squared_dev.sum(axis=1)
@@ -1562,7 +1609,11 @@ def main() -> None:
 
     config = yaml.safe_load(CONFIG.read_text())
     subcultures = config["subcultures"]
-    print(f"[config] loaded {len(subcultures)} subcultures")
+    settings = config.get("settings", {}) or {}
+    default_threshold = float(
+        settings.get("default_threshold", DEFAULT_MEMBERSHIP_THRESHOLD)
+    )
+    print(f"[config] loaded {len(subcultures)} subcultures (default τ={default_threshold:.2f})")
 
     # Boundaries first — needed to discover PUMA codes before chunked PUMS pulls.
     fetch_pumas_geojson()
@@ -1570,21 +1621,58 @@ def main() -> None:
     df = fetch_pums()
     print(f"[scoring] {len(df):,} records, {df['PUMA'].nunique()} PUMAs")
 
-    scores = {}
-    for sub in subcultures:
-        s = score_subculture(df, sub)
-        scores[sub["id"]] = s
-        print(f"[score] {sub['id']:25s}: avg={s.mean():.3f} max={s.max():.3f} nonzero={(s > 0).sum():,}")
+    # Per-cohort scoring. For each subculture we keep three artifacts:
+    #   gates[sub]     : Series[bool], True where every required condition passes
+    #   fit_scores[sub]: Series[float], soft similarity in [0, 1]
+    #   members[sub]   : Series[float], 1.0 if record is a cohort member, else 0
+    # `members` is the primary downstream estimand: a binary indicator that
+    # turns into a population count when weighted by PWGTP. `fit_scores` is
+    # retained as a within-cohort secondary diagnostic (mean fit per member,
+    # distribution of fit, threshold sensitivity). See METHODOLOGY.md.
+    gates: dict[str, pd.Series] = {}
+    fit_scores: dict[str, pd.Series] = {}
+    members: dict[str, pd.Series] = {}
+    thresholds: dict[str, float] = {}
 
-    puma_scores = aggregate_to_puma(df, scores)
+    for sub in subcultures:
+        sub_id = sub["id"]
+        gate, fit_score = score_subculture(df, sub)
+        threshold = float(sub.get("threshold", default_threshold))
+        member = compute_membership(gate, fit_score, threshold)
+
+        gates[sub_id] = gate
+        fit_scores[sub_id] = fit_score
+        members[sub_id] = member
+        thresholds[sub_id] = threshold
+
+        gate_pass = int(gate.sum())
+        member_count = float((member * df["PWGTP"]).sum())
+        members_among_passers = int(member.sum())
+        # Mean fit among members (only meaningful when there are members).
+        if members_among_passers > 0:
+            mean_fit = float(((fit_score * member) * df["PWGTP"]).sum() / member_count) if member_count > 0 else 0.0
+        else:
+            mean_fit = 0.0
+        print(
+            f"[score] {sub_id:25s}: τ={threshold:.2f}  "
+            f"gate_pass={gate_pass:>7,}  members(records)={members_among_passers:>7,}  "
+            f"members(weighted)={member_count:>11,.0f}  mean_fit={mean_fit:.3f}"
+        )
+
+    # PUMA-level aggregation. The primary aggregate is the weighted count of
+    # cohort members per PUMA. We also aggregate the soft fit score for the
+    # secondary `mean_fit_per_member` diagnostic.
+    puma_scores = aggregate_to_puma(df, members)
     out_scores = DATA / "scores.json"
     out_scores.write_text(json.dumps(puma_scores, indent=2))
     print(f"[save] {out_scores}")
 
     # PUMS sampling variance per PUMA per cohort, via successive-difference
-    # replication on PWGTP1..PWGTP80. Used as σ²_e_p in the Fay-Herriot model.
+    # replication on PWGTP1..PWGTP80. With binary membership indicators this
+    # is the SDR variance of a population total (count), the canonical use
+    # case. Used as σ²_e_p in the Fay-Herriot model.
     print("[variance] computing PUMS sampling variance via SDR (80 replicates)...")
-    puma_score_variance = aggregate_to_puma_variance(df, scores)
+    puma_score_variance = aggregate_to_puma_variance(df, members)
     if puma_score_variance:
         out_variance = DATA / "scores_variance.json"
         out_variance.write_text(json.dumps(puma_score_variance, indent=2))
@@ -1592,13 +1680,47 @@ def main() -> None:
     else:
         print("[variance] replicate weights not available; FH will degenerate to OLS")
 
-    # Sanity totals.
+    # Sanity totals + secondary diagnostics. The primary per-cohort number is
+    # the weighted count of members; soft-total and mean-fit-among-members are
+    # secondary diagnostics retained for sensitivity analysis and threshold
+    # tuning.
+    soft_totals = {
+        sub_id: float((fit_scores[sub_id] * df["PWGTP"]).sum())
+        for sub_id in fit_scores
+    }
+    member_counts = {
+        sub_id: float((members[sub_id] * df["PWGTP"]).sum())
+        for sub_id in members
+    }
+    gate_pass_counts = {
+        sub_id: float((gates[sub_id].astype(float) * df["PWGTP"]).sum())
+        for sub_id in gates
+    }
+    mean_fit_per_member = {
+        sub_id: (
+            float(((fit_scores[sub_id] * members[sub_id]) * df["PWGTP"]).sum() / member_counts[sub_id])
+            if member_counts[sub_id] > 0
+            else 0.0
+        )
+        for sub_id in members
+    }
+
     summary = {
         "total_pums_records": len(df),
         "total_weighted_population": float((df["PWGTP"]).sum()),
         "puma_count": int(df["PUMA"].nunique()),
-        "per_subculture_weighted_total": {
-            sub_id: float((scores[sub_id] * df["PWGTP"]).sum()) for sub_id in scores
+        # Primary estimand: weighted count of cohort members per cohort.
+        "per_subculture_member_count": member_counts,
+        # Secondary diagnostics, retained per cohort for transparency and
+        # threshold-sensitivity analysis.
+        "per_subculture_diagnostics": {
+            sub_id: {
+                "threshold": thresholds[sub_id],
+                "gate_pass_weighted": gate_pass_counts[sub_id],
+                "soft_total_weighted": soft_totals[sub_id],
+                "mean_fit_per_member": mean_fit_per_member[sub_id],
+            }
+            for sub_id in members
         },
     }
     out_summary = DATA / "summary.json"
@@ -1671,6 +1793,20 @@ def main() -> None:
     out_tract_scores = DATA / "tract_scores.json"
     out_tract_scores.write_text(json.dumps(tract_scores))
     print(f"[save] {out_tract_scores} ({len(tract_scores):,} tracts)")
+
+    # Attach scoring-stage secondary diagnostics (threshold, gate-pass count,
+    # soft total, mean fit per member) to each cohort's model summary so the
+    # full membership-rule audit lives in one file alongside the regression
+    # diagnostics.
+    for sub_id, summary in model_summaries.items():
+        summary["membership"] = {
+            "threshold": thresholds.get(sub_id, default_threshold),
+            "default_threshold": default_threshold,
+            "weighted_gate_pass": gate_pass_counts.get(sub_id, 0.0),
+            "weighted_member_count": member_counts.get(sub_id, 0.0),
+            "weighted_soft_total": soft_totals.get(sub_id, 0.0),
+            "mean_fit_per_member": mean_fit_per_member.get(sub_id, 0.0),
+        }
 
     out_models = DATA / "model_summaries.json"
     out_models.write_text(json.dumps(model_summaries, indent=2))

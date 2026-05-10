@@ -23,7 +23,7 @@ pip install -r requirements.txt
 python pipeline.py
 ```
 
-First run takes 2-5 minutes (downloads CA PUMS CSVs, tract boundaries, ACS marginals). Subsequent runs use the cache and finish in seconds.
+First run takes 10-20 minutes (downloads CA PUMS 5-Year CSVs, tract boundaries, ACS tract marginals). Subsequent runs use the cache and finish the scoring + small-area pass in well under a minute.
 
 **2. Sync data to the web app and run it.** From `web/`:
 
@@ -57,7 +57,7 @@ See [METHODOLOGY.md](./METHODOLOGY.md) for the full description of data sources,
 
 ## Data sources
 
-- ACS Public Use Microdata Sample (PUMS), 2023 1-Year, California
+- ACS Public Use Microdata Sample (PUMS), 2023 5-Year, California (~5% pooled sample, ~2M person records)
 - ACS 5-Year Detailed Tables, 2023, tract level (for marginals)
 - TIGER/Line shapefiles for census tract boundaries
 - Census Bureau tract-to-PUMA crosswalk

@@ -67,33 +67,52 @@ Third, a **proxy-gap note** documenting categorical attributes the trait vector 
 
 The configuration follows one explicit modeling constraint: no geographic gating is applied. Cohorts are not restricted to specific PUMAs, counties, or regions, so any spatial concentration emerges from the demographic and behavioral signals rather than from a pre-imposed geography. Hard gates within the trait vector are reserved for traits that structurally define category membership rather than that score it.
 
-## 5. Scoring
+## 5. Scoring and Membership
 
-For each PUMS person record and each subculture, a similarity score in `[0, 1]` is computed. Each condition in the trait vector returns 1 if satisfied and 0 otherwise. If any required condition returns 0, the record's score for that cohort is 0. Otherwise:
+The membership rule is two-stage. First a continuous fit score is computed per record. Then a per-cohort threshold is applied to derive a binary cohort membership indicator. The PUMA-level estimand is the weighted count of cohort members, a well-defined population total in the standard small-area-estimation sense.
 
-```
-score(record, s) = Σ_i w_i · 1{condition_i satisfied} / Σ_i w_i
-```
+This formulation is a deliberate departure from a fuzzy-set scoring approach in which the PUMA-level estimand was the PWGTP-weighted sum of soft similarity scores. The fuzzy-set quantity is well defined as a σ-count (Zadeh 1983) but it is not a population total, and applying Fay-Herriot machinery to it conflates a fuzzy cardinality with a count. Threshold-based membership produces a quantity the downstream machinery is designed for and connects directly to standard practice in synthetic-population microsimulation (Beckman, Baggerly, and McKay 1996; Williamson, Birkin, and Rees 1998; Tanton and Edwards 2013).
 
-where `w_i` are the condition weights. Each record is then weighted by its sampling weight `PWGTP` (the integer count of real Californians the record represents) and aggregated by PUMA:
+**Stage 1: Fit score.** For each PUMS person record and each subculture, a continuous fit score in `[0, 1]` is computed. Each condition in the trait vector returns 1 if satisfied and 0 otherwise. If any condition marked `required` returns 0, the gate fails closed and the fit score is 0. Otherwise:
 
 ```
-PUMA_score(s, p) = Σ_{r ∈ p} similarity(r, s) · PWGTP_r
+fit(record, s) = Σ_i w_i · 1{condition_i satisfied} / Σ_i w_i
 ```
 
-The result is a weighted population estimate of the cohort within each PUMA. Because soft conditions contribute fractional matches, sums across cohorts can exceed actual population. The score is therefore best read as a relative concentration measure within a single cohort, not as a head count of cohort membership.
+where `w_i` are the condition weights. Records that exactly satisfy the full vector score 1; records that pass all gates but match no soft conditions score the gate-only baseline (the share of total weight contributed by required conditions).
+
+**Stage 2: Membership indicator.** Each cohort declares a threshold `τ ∈ (0, 1]` (default 0.5, settable in the YAML `settings` block, overridable per cohort). A record counts as a cohort member iff its gate evaluates True AND its fit score is at or above τ:
+
+```
+member(record, s) = 1   if   gate(record, s)   AND   fit(record, s) ≥ τ_s
+                  = 0   otherwise
+```
+
+The threshold operationalizes "how exclusive is this cohort" and is the place where editorial intent about cohort exclusiveness is concentrated. Where external benchmarks exist (Williams Institute LGBTQ population estimates, Pew language statistics, county voter-registration totals), τ can be calibrated against them. Where they do not, τ is chosen editorially with stated rationale. The structural analogue is operating-point selection on a continuous decision function in classifier evaluation (Hanley and McNeil 1982; Pepe 2003).
+
+**Stage 3: PUMA aggregation.** Each member indicator is weighted by the record's sampling weight `PWGTP` (the integer count of real Californians the record represents) and summed by PUMA:
+
+```
+y_p(s) = Σ_{r ∈ p} member(r, s) · PWGTP_r
+```
+
+`y_p(s)` is the weighted count of cohort members in PUMA p: a well-defined population total that the downstream Fay-Herriot, SDR, and raking machinery operates on in the standard sense. Sums across cohorts can still exceed the state population because cohorts are not mutually exclusive, but within a single cohort `y_p(s)` is a count, not a fuzzy quantity.
+
+**Secondary diagnostics.** The soft fit score is retained per cohort as a within-cohort secondary diagnostic. Three quantities are reported per cohort in `summary.json` and `model_summaries.json`: the **weighted gate-pass count** (records that pass the cohort's required conditions before the threshold filter), the **weighted soft total** (Σ fit_score × PWGTP, the previous primary estimand under fuzzy-set scoring), and the **mean fit per member** (the average fit score among members). The mean fit per member is the most useful diagnostic for threshold tuning: values close to 1 indicate the cohort is dominated by textbook examples, values close to τ indicate marginal qualifiers and suggest τ may be too low for the cohort's editorial intent.
 
 ## 6. Geographic Distribution: Fay–Herriot Small-Area Estimation
 
-Tract-level resolution is achieved through a four-step area-level small-area-estimation procedure. Operating at the area level (rather than fitting a unit-level model) reflects the fact that PUMS records carry no tract identifier under Census Bureau disclosure rules, so direct tract-level estimation from microdata is not feasible.
+Tract-level resolution is achieved through a four-step area-level small-area-estimation procedure operating on the per-PUMA member count `y_p(s)` produced by the scoring stage. Operating at the area level (rather than fitting a unit-level model) reflects the fact that PUMS records carry no tract identifier under Census Bureau disclosure rules, so direct tract-level estimation from microdata is not feasible.
 
 **Step 1: Non-negative ridge regression.** For each cohort, a design matrix is built with PUMA population and the cohort's declared marginals (aggregated from tract to PUMA). Predictors are z-score standardized so the L2 ridge penalty applies uniformly across columns of different scales (Hastie, Tibshirani, and Friedman 2009). Ridge regularization (Hoerl and Kennard 1970) is used to address the strong multicollinearity between count predictors and PUMA population. Non-negativity is enforced via Lawson and Hanson (1974) NNLS because both predictors and response are non-negative counts; a negative coefficient would imply a count predictor *suppresses* cohort membership, which is conceptually awkward without structural justification. The penalty parameter λ is selected per cohort by leave-one-PUMA-out cross-validation across the grid `{0, 0.1, 1, 10, 100, 1000, 10000}`.
 
-**Step 2: Successive-difference replication for sampling variance.** PUMS ships with 80 successive-difference replicate weights. For each cohort and each PUMA the cohort score is computed 81 times, and the per-PUMA sampling variance follows the Census-published formula (Wolter 2007):
+**Step 2: Successive-difference replication for sampling variance.** PUMS ships with 80 successive-difference replicate weights. For each cohort and each PUMA the member count is computed 81 times (once with the main weight, once each with the 80 replicate weights), and the per-PUMA sampling variance of the count follows the Census-published formula (Wolter 2007):
 
 ```
-Var(score_p) = (4 / 80) · Σ_r (score_{p,r} − score_p)²
+Var(y_p) = (4 / 80) · Σ_r (y_{p,r} − y_p)²
 ```
+
+With binary membership as input, this is the SDR variance of a population total, the canonical use case.
 
 **Step 3: Fay–Herriot EBLUP shrinkage.** The Fay–Herriot (1979) area-level model is:
 
@@ -117,7 +136,7 @@ A fallback path applies when fewer than eight PUMAs carry valid data, the design
 
 ## 7. Visualization
 
-Tract-level scores are rendered as randomly placed dots within tract polygons. The number of dots is `floor(tract_score / DOTS_PER_UNIT)`, with `DOTS_PER_UNIT` set to 20, so each visual dot corresponds approximately to 20 weighted cohort-equivalent persons. Random points are accepted by ray-casting point-in-polygon test against tract geometry pre-clipped to the California land cartographic boundary, so no dots fall on water. Multiple cohorts may be rendered simultaneously, with each cohort assigned a distinct color and the combined dot feature collection randomly shuffled (Fisher–Yates) to prevent systematic paint-order bias when several cohorts overlap.
+Tract-level estimates are rendered as randomly placed dots within tract polygons. The number of dots is `floor(tract_count / DOTS_PER_UNIT)`, with `DOTS_PER_UNIT` set to 20, so each visual dot corresponds to approximately 20 cohort members in that tract. Under the threshold-based membership rule the tract-level estimate is a weighted population count (the share of the PUMA member count allocated to the tract via raking), so the dot legend maps to a meaningful population quantity rather than a fuzzy-set cardinality. Random points are accepted by ray-casting point-in-polygon test against tract geometry pre-clipped to the California land cartographic boundary, so no dots fall on water. Multiple cohorts may be rendered simultaneously, with each cohort assigned a distinct color and the combined dot feature collection randomly shuffled (Fisher–Yates) to prevent systematic paint-order bias when several cohorts overlap.
 
 ## 8. Findings
 
@@ -137,7 +156,7 @@ A subsidiary finding concerns the precision-detection relationship. The same dia
 
 Uncertainty in the project's outputs stacks across three decisions, listed in roughly decreasing order of contribution to final dot placement.
 
-**Trait vector specification (largest, irreducibly subjective).** No statistical procedure can determine "what counts as a queer leftist" from data alone; the trait vector is an editorial operationalization of a cultural archetype. The proxy-gap notes in `subcultures.yaml` document what each vector cannot capture. Several attributes are simply absent from ACS data: gender identity, sexual orientation beyond same-sex household composition, religion, political affiliation, and consumption preferences. A reviewer's leverage on improving the map is highest at this layer.
+**Trait vector and threshold specification (largest, irreducibly editorial).** No statistical procedure can determine "what counts as a queer leftist" from data alone; the trait vector and the membership threshold τ together are an editorial operationalization of a cultural archetype. The proxy-gap notes in `subcultures.yaml` document what each vector cannot capture. Several attributes are simply absent from ACS data: gender identity, sexual orientation beyond same-sex household composition, religion, political affiliation, and consumption preferences. A reviewer's leverage on improving the map is highest at this layer.
 
 **Marginal selection (moderate).** Tract-level marginals are picked by judgment about correlation with the cohort's expected geography, then constrained by what the Census publishes at tract level. Several natural choices, including Table B16001 (detailed language) and Table B11009 (same-sex partner households), are tract-suppressed for disclosure reasons; the substitutes (Tables C16001 and B11001 respectively) lose specificity. Per-cohort sensitivity to marginal selection is not formally characterized; a leave-one-marginal-out R² delta would be a natural extension. There is also no external validation against independent ground truth (Williams Institute LGBTQ population estimates, Pew language statistics, county-level voter-registration totals), and external validation is the single highest-leverage methodological improvement available beyond the current state.
 
@@ -147,7 +166,9 @@ Several other limitations bear naming.
 
 The **same-sex household indicator** captures only the partnered fraction of LGBTQ adults, roughly twenty percent. Single LGBTQ residents are invisible in any cohort that gates on `SAME_SEX = 1`.
 
-**Soft scoring produces fractional matches**, so per-cohort sums can exceed total population. Absolute cohort scores should not be read as headcounts.
+**Cohort membership is sensitive to the threshold τ.** Membership is binary at the per-record level under the threshold-based rule, but the rule has one tunable parameter per cohort. Lowering τ admits marginal qualifiers; raising τ admits only textbook examples. Per-cohort sensitivity to τ has not been formally characterized; a threshold sweep across a small grid (e.g., {0.3, 0.4, 0.5, 0.6, 0.7}) per cohort, reporting how member counts and tract-level geographies move, would be a natural extension. Where external benchmarks are available, τ can be calibrated against them; otherwise τ is editorial.
+
+**Cohorts can overlap.** Cohorts are not mutually exclusive: a single individual may be a queer leftist *and* a bilingual baddie. Sums of member counts across cohorts can therefore exceed the state population. Within any single cohort, the count is a well-defined population total; across cohorts, the sum is the total of overlapping cohort participations, not a partition of the state.
 
 **Residuals exhibit significant positive spatial autocorrelation** across nearly every cohort (Moran's *I* typically 0.27 to 0.42, *z* > 7, *p* < 10⁻¹⁵ under the normality assumption). A non-spatial specification was retained deliberately because the unit of inference is the PUMA and the project is descriptive cartography rather than spatial econometrics. Future work could fit a spatial-lag model `y = ρWy + Xβ + ε` in the sense of Anselin (1988) or LeSage and Pace (2009) to absorb this residual structure.
 
@@ -187,6 +208,8 @@ A longer-horizon question concerns generalization beyond California. The PUMA-le
 
 Anselin, Luc. 1988. *Spatial Econometrics: Methods and Models*. Dordrecht: Kluwer Academic Publishers.
 
+Beckman, Richard J., Keith A. Baggerly, and Michael D. McKay. 1996. "Creating Synthetic Baseline Populations." *Transportation Research Part A* 30 (6): 415–429.
+
 Belsley, David A., Edwin Kuh, and Roy E. Welsch. 1980. *Regression Diagnostics: Identifying Influential Data and Sources of Collinearity*. New York: Wiley.
 
 Bester, C. Alan, Timothy G. Conley, and Christian B. Hansen. 2011. "Inference with Dependent Data Using Cluster Covariance Estimators." *Journal of Econometrics* 165 (2): 137–151.
@@ -217,6 +240,8 @@ Fay, Robert E., and Roger A. Herriot. 1979. "Estimates of Income for Small Place
 
 Garreau, Joel. 1981. *The Nine Nations of North America*. Boston: Houghton Mifflin.
 
+Hanley, James A., and Barbara J. McNeil. 1982. "The Meaning and Use of the Area under a Receiver Operating Characteristic (ROC) Curve." *Radiology* 143 (1): 29–36.
+
 Haraway, Donna J. 1988. "Situated Knowledges: The Science Question in Feminism and the Privilege of Partial Perspective." *Feminist Studies* 14 (3): 575–599.
 
 Harley, J. Brian. 1989. "Deconstructing the Map." *Cartographica* 26 (2): 1–20.
@@ -235,6 +260,8 @@ Meyer, Ilan H. 2003. "Prejudice, Social Stress, and Mental Health in Lesbian, Ga
 
 Moran, Patrick A. P. 1950. "Notes on Continuous Stochastic Phenomena." *Biometrika* 37 (1/2): 17–23.
 
+Pepe, Margaret S. 2003. *The Statistical Evaluation of Medical Tests for Classification and Prediction*. Oxford: Oxford University Press.
+
 Prasad, Narasimha G. N., and J. N. K. Rao. 1990. "The Estimation of the Mean Squared Error of Small-Area Estimators." *Journal of the American Statistical Association* 85 (409): 163–171.
 
 Rao, J. N. K., and Isabel Molina. 2015. *Small Area Estimation*. 2nd ed. Hoboken, NJ: Wiley.
@@ -243,10 +270,16 @@ Said, Edward W. 1978. *Orientalism*. New York: Pantheon Books.
 
 Solnit, Rebecca. 2010. *Infinite City: A San Francisco Atlas*. Berkeley: University of California Press.
 
+Tanton, Robert, and Kimberley L. Edwards, eds. 2013. *Spatial Microsimulation: A Reference Guide for Users*. Dordrecht: Springer.
+
 U.S. Census Bureau. 2023. *PUMS Accuracy of the Data*. American Community Survey documentation.
+
+Williamson, Paul, Mark Birkin, and Phil H. Rees. 1998. "The Estimation of Population Microdata by Using Data from Small Area Statistics and Samples of Anonymised Records." *Environment and Planning A* 30 (5): 785–816.
 
 Wolter, Kirk M. 2007. *Introduction to Variance Estimation*. 2nd ed. New York: Springer.
 
 Wood, Denis. 1992. *The Power of Maps*. New York: Guilford Press.
 
 Woodard, Colin. 2011. *American Nations: A History of the Eleven Rival Regional Cultures of North America*. New York: Viking.
+
+Zadeh, Lotfi A. 1983. "A Computational Approach to Fuzzy Quantifiers in Natural Languages." *Computers & Mathematics with Applications* 9 (1): 149–184.
