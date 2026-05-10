@@ -24,6 +24,31 @@ const DOTS_PER_UNIT = 20;
 
 const BASEMAP_STYLE = "https://tiles.openfreemap.org/styles/positron";
 
+// Base zoom→radius stops for the dot circle layer. The actual paint
+// expression multiplies these by a user-controlled scale factor (the slider
+// in the bottom-right) so the user can scale dots up or down relative to
+// the natural zoom curve without re-rendering the dot data.
+const BASE_RADIUS_STOPS: [number, number][] = [
+  [4, 0.7],
+  [6, 1.0],
+  [8, 1.3],
+  [10, 2.0],
+  [12, 3.2],
+  [15, 7.0],
+];
+
+function buildRadiusExpression(scale: number): maplibregl.ExpressionSpecification {
+  const interp: (string | number | string[])[] = [
+    "interpolate",
+    ["exponential", 1.6],
+    ["zoom"],
+  ];
+  for (const [z, r] of BASE_RADIUS_STOPS) {
+    interp.push(z, r * scale);
+  }
+  return interp as unknown as maplibregl.ExpressionSpecification;
+}
+
 
 // Build a "match" expression mapping subculture id to color, for use as
 // circle-color in a single layer that holds dots from all selected subcultures.
@@ -46,9 +71,9 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
   // on isStyleLoaded() — which can flip false transiently during tile
   // fetches and silently drop data updates if we gated on it.
   const [mapReady, setMapReady] = useState(false);
-  // Live zoom level, displayed in the bottom-left readout for tuning the
-  // circle-radius interpolation curve in the dots-circle paint property.
-  const [zoom, setZoom] = useState<number>(5.2);
+  // User-controlled multiplier on the base radius curve. 1.0 = the curve
+  // defined by BASE_RADIUS_STOPS; anything else scales every stop uniformly.
+  const [dotScale, setDotScale] = useState<number>(1.0);
 
   // Generate dots for all selected subcultures, each tagged with its subculture id.
   // Shuffle the combined feature array (Fisher-Yates) so that paint order is random
@@ -99,7 +124,6 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
       "bottom-right"
     );
     mapRef.current = map;
-    map.on("zoom", () => setZoom(map.getZoom()));
 
     map.on("load", () => {
       // Identify the first symbol (label) layer in the basemap so we can
@@ -124,17 +148,7 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
           type: "circle",
           source: "dots",
           paint: {
-            "circle-radius": [
-              "interpolate",
-              ["exponential", 1.6],
-              ["zoom"],
-              4, 0.7,
-              6, 1,
-              8, 1.3,
-              10, 2.0,
-              12, 3.2,
-              15, 7.0,
-            ],
+            "circle-radius": buildRadiusExpression(1.0),
             "circle-color": colorMatchExpression(),
             "circle-opacity": [
               "interpolate",
@@ -177,12 +191,26 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
     if (src) src.setData(dots);
   }, [dots, mapReady]);
 
-
+  // Push the user's dot-scale multiplier into the dots-circle paint property
+  // whenever the slider moves. This rebuilds the radius interpolation expression
+  // with each base stop multiplied by `dotScale` and applies it without
+  // touching the dot source data, so it's cheap and instant.
+  useEffect(() => {
+    if (!mapReady) return;
+    const map = mapRef.current;
+    if (!map) return;
+    map.setPaintProperty("dots-circle", "circle-radius", buildRadiusExpression(dotScale));
+  }, [dotScale, mapReady]);
 
 
   return (
     <div style={{ width: "100%", height: "100%", position: "relative" }}>
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+      {/* Bottom-left card: info readout + dot-size slider in one flex row.
+          flex-wrap lets the slider drop below the text on narrow viewports
+          rather than horizontally overflowing into the rest of the UI; the
+          maxWidth keeps the card itself bounded on small screens so it never
+          runs into the mobile cohort legend that lives above it (bottom: 56). */}
       <div
         style={{
           position: "absolute",
@@ -194,11 +222,35 @@ export default function MapView({ geojson, scores, selectedIds }: Props) {
           background: "rgba(255,255,255,0.85)",
           padding: "4px 8px",
           borderRadius: 4,
+          display: "flex",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: 8,
+          maxWidth: "calc(100vw - 24px)",
+          boxSizing: "border-box",
         }}
       >
-        {dots.features.length.toLocaleString()} dots ·{" "}
-        {selectedIds.length} subculture{selectedIds.length === 1 ? "" : "s"} · 1 dot ≈{" "}
-        {DOTS_PER_UNIT.toLocaleString()} people · zoom {zoom.toFixed(2)}
+        <span className="map-info-text">
+          {dots.features.length.toLocaleString()} dots ·{" "}
+          {selectedIds.length} subculture{selectedIds.length === 1 ? "" : "s"} · 1 dot ≈{" "}
+          {DOTS_PER_UNIT.toLocaleString()} people
+        </span>
+        <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span className="dot-size-separator">· </span>
+          <span>dot size</span>
+          <input
+            type="range"
+            min={0.8}
+            max={2.5}
+            step={0.1}
+            value={dotScale}
+            onChange={(e) => setDotScale(parseFloat(e.target.value))}
+            className="dot-size-slider"
+            style={{ width: 100, cursor: "pointer" }}
+            aria-label="Dot size scale"
+          />
+          <span style={{ minWidth: 28, textAlign: "right" }}>{dotScale.toFixed(1)}×</span>
+        </span>
       </div>
     </div>
   );

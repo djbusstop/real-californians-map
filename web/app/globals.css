@@ -22,3 +22,57 @@ a {
   color: inherit;
 }
 
+/* Dot-size slider in the bottom-left readout (MapView). Custom thumb:
+   slightly lighter gray than the track, shorter than the browser default.
+   Track color, thumb color, and dimensions are set via webkit/moz
+   pseudo-elements for cross-browser consistency. */
+.dot-size-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: transparent;
+  padding: 0;
+}
+.dot-size-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #9ca3af;
+  border: none;
+  cursor: pointer;
+  margin-top: -3px;
+}
+.dot-size-slider::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #9ca3af;
+  border: none;
+  cursor: pointer;
+}
+.dot-size-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  background: #d1d5db;
+  border-radius: 2px;
+}
+.dot-size-slider::-moz-range-track {
+  height: 4px;
+  background: #d1d5db;
+  border-radius: 2px;
+}
+
+/* On narrow viewports, hide the dot count / subculture count / 1 dot ≈ 20
+   people text and the leading separator dot, leaving just the slider in
+   the bottom-left card. The mobile sidebar legend already shows the cohort
+   set; the count text isn't worth the screen space on mobile. */
+@media (max-width: 768px) {
+  .map-info-text {
+    display: none;
+  }
+  .dot-size-separator {
+    display: none;
+  }
+}
+
