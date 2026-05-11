@@ -206,6 +206,37 @@ The synthetic-estimator approach has direct precedent in the small-area-estimati
 
 Raking is a benchmarking constraint standard in production small-area estimation (Rao & Molina 2015, §6.4). Using the EBLUP as the raking target rather than the direct estimate is what propagates the sampling-variance correction down to the tract level: noisy PUMS estimates for small-cohort PUMAs are stabilized toward the regression line before being distributed across tracts.
 
+#### MOE-weighted raking
+
+The published ACS tract estimates the regression uses as inputs carry margins of error that, for narrow demographic cells, can be a substantial fraction of the published point estimate. The per-marginal reliability summary (described in the Diagnostics section) makes this concrete: for several cohorts more than half of the contributing tracts fall in the Census Bureau's *unreliable* band (CV ≥ 40%). Treating those tracts' marginal counts as if they were exact inputs to the within-PUMA share calculation would let measurement noise drive dot placement.
+
+Step 4 therefore weights each tract's predicted share by the inverse of its MOE-propagated prediction variance before raking. For each tract *t*:
+
+```
+SE(t)² = Σ_k (β_raw_k)² · (MOE_k(t) / 1.645)²
+weight(t) = 1 / (SE(t)² + ε)
+weighted_share(t) = max(predict(t), 0) · weight(t)
+tract_score(t, s) = ŷ_FH_p · weighted_share(t) / Σ_{t'∈T(p)} weighted_share(t')
+```
+
+where MOE_k(t) is the ACS-published 90% margin of error on the k-th marginal at tract *t*, 1.645 is the corresponding z-score (Census Bureau 2020, ch. 7), and ε is a small numerical safeguard against divide-by-zero for tracts where every marginal MOE is published as 0 (controlled totals). Population (k = 0) is treated as having zero MOE because B01003 is a controlled total in ACS detailed tables, so its variance contribution is identically zero.
+
+The mathematical structure is **inverse-variance combination** (Cochran 1937, *Journal of the Royal Statistical Society* 4(1), 102–118; Hartung, Knapp & Sinha 2008, *Statistical Meta-Analysis with Applications*, Wiley): when one combines multiple noisy observations of related quantities, the textbook approach is to weight each by the inverse of its variance. Applied here, tracts whose marginals are precise contribute more to the within-PUMA share, and tracts whose marginals are mostly measurement noise contribute less. Mass shifts from noisy tracts to clean ones; the PUMA total is preserved by raking. The intervention is local to Step 4 and does not change the PUMA-level inference machinery (FH+EBLUP, SDR variance, bootstrap CIs, Conley SEs).
+
+The motivation for this step is Spielman & Singleton (2015) and Spielman, Folch & Nagle (2014), which establish that ACS small-area MOEs are non-trivial and spatially patterned, and that ignoring them in geodemographic classification is methodologically indefensible. The previous version of this pipeline reported per-marginal reliability summaries without propagating them into allocation; this step closes that gap.
+
+**Why this approach was chosen.** Three alternatives were considered.
+
+*Disclosure only.* Report MOE-derived per-marginal reliability summaries in `model_summaries.json` (which the pipeline already does) but make no allocation change. The minimum-bar move; defensible but stops short of acting on the disclosure.
+
+*Inverse-variance weighted raking* (the chosen approach). A deterministic adjustment that downweights noisy tracts during within-PUMA share calculation, preserving the existing frequentist FH+ridge+raking architecture. Implementation is local to Step 4 and adds roughly one hundred lines of pipeline code. The methodological precedent (Cochran 1937 for the combination rule; Spielman & Singleton 2015 for the application) is well-established.
+
+*Bayesian propagation of MOE.* Treat each tract marginal as a posterior distribution centred on its point estimate, sample from these distributions, and run the regression-and-rake pipeline on samples. Report tract scores as posterior means with credible intervals (Datta & Ghosh 1991; You & Chapman 2006 on hierarchical Bayes Fay-Herriot). Most rigorous statistically; provides per-tract uncertainty intervals that could be surfaced on the map. The cost is a substantive methodological commitment, requiring a Bayesian sampling layer, defence of the prior structure (normal MOE around the point estimate; truncation at zero), and an epistemic reframing of the project's existing verification criterion (concordance with the author's imagined geography) into a Bayesian register (concordance with the author's imagined geography for most cohort-relevant tracts within the credible interval).
+
+The chosen approach is the middle path. It materially improves tract-level allocation precision for cohorts most affected by ACS marginal noise (bilingual_baddie, hill_people, crazy_person, and the apartment-density components of married_gays and queer_leftist), it is mathematically standard, and it preserves the project's existing frequentist methodological commitments without expansion. The Bayesian approach is documented here as a v2 direction for a project transitioning toward formal quantitative-cultural-geography publication or interactive uncertainty visualisation.
+
+Per-cohort, `model_summaries.json[cohort].moe_weighted_raking` records a boolean indicating whether the weighting was applied; it is `False` only for cohorts where MOE data is missing for one or more declared marginals (rare; mostly occurs when a marginal pull failed mid-run).
+
 ### Diagnostics
 
 For each cohort, `data/model_summaries.json` records:
@@ -224,6 +255,15 @@ For each cohort, `data/model_summaries.json` records:
   ```
   where d_ij is the great-circle distance between PUMA centroids in kilometers, K is a Bartlett kernel, h = 75 km is a fixed bandwidth chosen as a moderate cluster size for California's PUMA layout (a few PUMAs in dense urban regions, a single PUMA covering broad rural counties), and the (X′X + λI)⁻¹ form is the ridge-adjusted analog of the OLS sandwich. The reported standard error per coefficient is the square root of the corresponding diagonal element of V. Conley SEs are valid under heteroscedastic, spatially-dependent residuals — exactly the situation our Moran's I diagnostics confirm we have. We do not implement automatic bandwidth selection (Bester, Conley & Hansen 2011, *Journal of Econometrics* 165(2), 137–151; Müller & Watson 2017, *Econometrica* 85(4), 1057–1099). The deliberate choice: this project's primary inference statement on coefficients is the non-parametric bootstrap percentile CI (described next), which is bandwidth-free and respects the soft-scoring fractional-match structure of the cohort definitions. Conley SEs serve as a parametric companion estimate; when the two agree the inferential claim is strengthened, when they disagree the bootstrap is treated as authoritative. Tightening Conley via adaptive bandwidth selection would polish the secondary diagnostic without changing the primary inference.
 - **Non-parametric bootstrap percentile confidence intervals** for each coefficient (Efron & Tibshirani 1993, *An Introduction to the Bootstrap*, Chapman & Hall, §13). PUMAs are resampled with replacement 1000 times; at each resample we refit the NNLS+Ridge regression at the LOOCV-selected λ and record the coefficient vector. The 95% CI is the (2.5%, 97.5%) percentile of the empirical distribution. The bootstrap correctly handles both the non-negativity constraint and the ridge regularization, which the Conley estimator handles only approximately. Two complementary inference statements are reported per coefficient: the spatially-aware Conley SE and the non-parametric bootstrap CI; agreement between the two strengthens the inferential claim, disagreement is itself informative. Note that λ is held fixed at the LOOCV-selected value rather than retuned per resample, a "post-selection bootstrap" that ignores λ-selection uncertainty (Hastie, Tibshirani & Friedman 2009, *Elements of Statistical Learning* §7.10.2).
+- **Per-marginal ACS reliability summary.** Each tract-level marginal is published with a 90% margin of error (MOE) by the ACS. For each declared marginal per cohort, the pipeline computes the per-tract coefficient of variation `CV = (MOE / 1.645) / estimate` and reports:
+  - the median, 90th-percentile, and maximum CV across tracts,
+  - the count of tracts in the *use-with-caution* band (CV ≥ 12%),
+  - the count of tracts in the *unreliable* band (CV ≥ 40%),
+  - the count of tracts where CV is undefined (zero estimate or suppressed MOE).
+
+  The reliability bands follow U.S. Census Bureau (2020) *Understanding and Using American Community Survey Data: What All Data Users Need to Know*, chapter 7. The motivation for surfacing these statistics is Spielman & Singleton (2015), which shows that the published ACS tract MOEs are large enough at small-area resolution that ignoring them is methodologically indefensible for any small-area classification using ACS data. The companion paper Spielman, Folch & Nagle (2014, *Social Science Research* 26, 147–160) characterises the spatial patterning of these errors and shows they are not random across census geographies.
+
+  This pipeline currently uses the published point estimates for regression and raking, and the reliability summary is a *disclosure step* rather than a filter. Tracts with high CV are not screened out of the small-area allocation; their reliability is reported per cohort in `model_summaries.json[cohort].marginal_reliability` so a reader can assess how much of the tract-level allocation rests on noisy marginals. A future-work extension would propagate the published MOEs into the tract-allocation step itself (Spielman & Singleton's "contextual approach"), either as observation weights in raking or as a Bayesian prior over tract marginals.
 
 ### Diagnostics as calibration signals for the operationalization
 
@@ -367,12 +407,14 @@ Modifying a single condition in the configuration, re-running the pipeline (appr
 - Belsley, D. A., Kuh, E., & Welsch, R. E. (1980). *Regression Diagnostics: Identifying Influential Data and Sources of Collinearity*. Wiley.
 - Bester, C. A., Conley, T. G., & Hansen, C. B. (2011). Inference with dependent data using cluster covariance estimators. *Journal of Econometrics*, 165(2), 137–151.
 - Cliff, A. D., & Ord, J. K. (1981). *Spatial Processes: Models and Applications*. Pion.
+- Cochran, W. G. (1937). Problems arising in the analysis of a series of similar experiments. *Journal of the Royal Statistical Society*, 4(1), 102–118.
 - Conley, T. G. (1999). GMM estimation with cross sectional dependence. *Journal of Econometrics*, 92(1), 1–45.
 - Deming, W. E., & Stephan, F. F. (1940). On a least squares adjustment of a sampled frequency table when the expected marginal totals are known. *Annals of Mathematical Statistics*, 11(4), 427–444.
 - Efron, B., & Tibshirani, R. (1993). *An Introduction to the Bootstrap*. Chapman & Hall.
 - Fay, R. E., & Herriot, R. A. (1979). Estimates of income for small places: An application of James-Stein procedures to census data. *Journal of the American Statistical Association*, 74(366), 269–277.
 - Gonzalez, M. E. (1973). Use and evaluation of synthetic estimators. *Proceedings of the Social Statistics Section, American Statistical Association*, 33–36.
 - Hanley, J. A., & McNeil, B. J. (1982). The meaning and use of the area under a receiver operating characteristic (ROC) curve. *Radiology*, 143(1), 29–36.
+- Hartung, J., Knapp, G., & Sinha, B. K. (2008). *Statistical Meta-Analysis with Applications*. Wiley.
 - Hastie, T., Tibshirani, R., & Friedman, J. (2009). *The Elements of Statistical Learning* (2nd ed.). Springer.
 - Hoerl, A. E., & Kennard, R. W. (1970). Ridge regression: Biased estimation for nonorthogonal problems. *Technometrics*, 12(1), 55–67.
 - Lawson, C. L., & Hanson, R. J. (1974). *Solving Least Squares Problems*. Prentice-Hall.
@@ -383,8 +425,12 @@ Modifying a single condition in the configuration, re-running the pipeline (appr
 - Pepe, M. S. (2003). *The Statistical Evaluation of Medical Tests for Classification and Prediction*. Oxford University Press.
 - Prasad, N. G. N., & Rao, J. N. K. (1990). The estimation of the mean squared error of small-area estimators. *Journal of the American Statistical Association*, 85(409), 163–171.
 - Rao, J. N. K., & Molina, I. (2015). *Small Area Estimation* (2nd ed.). Wiley.
+- Singleton, A. D., & Spielman, S. E. (2014). The past, present, and future of geodemographic research in the United States and United Kingdom. *The Professional Geographer*, 66(4), 558–567.
 - Solnit, R. (2010). *Infinite City: A San Francisco Atlas*. University of California Press.
+- Spielman, S. E., Folch, D., & Nagle, N. (2014). Patterns and causes of uncertainty in the American Community Survey. *Social Science Research*, 26, 147–160.
+- Spielman, S. E., & Singleton, A. D. (2015). Studying neighborhoods using uncertain data from the American Community Survey: A contextual approach. *Annals of the Association of American Geographers*, 105(5), 1003–1025.
 - Tanton, R., & Edwards, K. L. (Eds.). (2013). *Spatial Microsimulation: A Reference Guide for Users*. Springer.
+- U.S. Census Bureau. (2020). *Understanding and Using American Community Survey Data: What All Data Users Need to Know*. Handbook for users.
 - U.S. Census Bureau. (2023). *PUMS Accuracy of the Data*. American Community Survey documentation.
 - Williamson, P., Birkin, M., & Rees, P. H. (1998). The estimation of population microdata by using data from small area statistics and samples of anonymised records. *Environment and Planning A*, 30(5), 785–816.
 - Wolter, K. M. (2007). *Introduction to Variance Estimation* (2nd ed.). Springer.

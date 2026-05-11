@@ -36,7 +36,7 @@ import warnings
 import zipfile
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import joblib
 import numpy as np
@@ -103,6 +103,24 @@ DEFAULT_MEMBERSHIP_THRESHOLD: float = 0.5
 # ----------------------------------------------------------------------------
 COHORT_N_JOBS: int = -1
 BOOTSTRAP_N_JOBS: int = -1
+
+# ----------------------------------------------------------------------------
+# ACS marginal reliability thresholds (coefficient of variation, CV).
+#
+# CV = (MOE / 1.645) / estimate. The denominator 1.645 is the z-score for the
+# 90% confidence level (ACS publishes MOEs at 90% by convention).
+#
+# Reliability thresholds from U.S. Census Bureau (2020), Understanding and
+# Using American Community Survey Data: What All Data Users Need to Know,
+# chapter 7. Spielman & Singleton (2015) develop the consequences of ignoring
+# tract-level MOE in geodemographic classification.
+#   CV < 12%               : estimate is considered reliable.
+#   12% <= CV < 40%        : use with caution.
+#   CV >= 40%              : estimate is not considered reliable.
+# ----------------------------------------------------------------------------
+CENSUS_CV_CAUTION_THRESHOLD: float = 0.12
+CENSUS_CV_UNRELIABLE_THRESHOLD: float = 0.40
+ACS_MOE_Z90: float = 1.645
 
 
 # ----------------------------------------------------------------------------
@@ -511,7 +529,96 @@ def fetch_tract_puma_crosswalk() -> pd.DataFrame:
     return df
 
 
-def fetch_acs_tract_marginal(var: str) -> dict:
+class TractMarginal(NamedTuple):
+    """Per-tract ACS marginal: point estimate and 90% margin of error.
+
+    Both dicts are keyed by tract GEOID. Suppressed or non-applicable cells:
+      - estimates: stored as 0.0 (consistent with the pre-MOE behavior).
+      - moes: stored as float('nan') so downstream reliability calculations
+              can distinguish a published 0.0 MOE (controlled total) from an
+              unpublished or special-coded cell.
+
+    Per U.S. Census Bureau convention, MOEs are published at the 90% confidence
+    level. The corresponding standard error is MOE / 1.645 (see ACS_MOE_Z90).
+    """
+
+    estimates: dict[str, float]
+    moes: dict[str, float]
+
+
+def _compute_tract_cv(estimate: float, moe: float) -> float | None:
+    """Coefficient of variation for one ACS tract cell.
+
+    Definition: CV = (MOE / 1.645) / estimate. The denominator 1.645 is the
+    z-score for the 90% confidence level (ACS publishes MOEs at 90%).
+
+    Returns None when CV is undefined: estimate is zero or negative, MOE is
+    missing (NaN), or MOE is negative (suppression code passed through).
+
+    Reference: U.S. Census Bureau (2020) Understanding and Using American
+    Community Survey Data: What All Data Users Need to Know, chapter 7.
+    """
+    if estimate is None or moe is None:
+        return None
+    if estimate <= 0:
+        return None
+    if not np.isfinite(moe) or moe < 0:
+        return None
+    return (moe / ACS_MOE_Z90) / estimate
+
+
+def _summarize_marginal_reliability(
+    estimates: dict[str, float],
+    moes: dict[str, float],
+    var_name: str | None = None,
+) -> dict:
+    """Reliability summary for a tract-level ACS marginal.
+
+    Returns a dict with:
+      - variable: ACS variable name (if provided).
+      - n_tracts_evaluated: tracts with a defined CV (estimate > 0 and MOE published).
+      - n_suppressed_or_zero: tracts where CV is undefined.
+      - n_caution: tracts with CV >= CENSUS_CV_CAUTION_THRESHOLD (0.12).
+      - n_unreliable: tracts with CV >= CENSUS_CV_UNRELIABLE_THRESHOLD (0.40).
+      - median_cv, p90_cv, max_cv: distribution of defined CVs.
+
+    Reliability bands follow Census Bureau (2020) ACS Handbook, ch. 7:
+      CV < 12% reliable; 12% <= CV < 40% caution; CV >= 40% unreliable.
+    Spielman & Singleton (2015) discuss why this matters for small-area
+    classification: the published point estimates encode sampling uncertainty
+    that downstream allocation steps usually ignore, and explicit disclosure
+    is the minimum-bar disclosure for any defensible analysis.
+    """
+    cvs: list[float] = []
+    n_caution = 0
+    n_unreliable = 0
+    n_suppressed = 0
+    for tract_geoid, est in estimates.items():
+        moe = moes.get(tract_geoid, float("nan"))
+        cv = _compute_tract_cv(est, moe)
+        if cv is None:
+            n_suppressed += 1
+            continue
+        cvs.append(cv)
+        if cv >= CENSUS_CV_UNRELIABLE_THRESHOLD:
+            n_unreliable += 1
+        elif cv >= CENSUS_CV_CAUTION_THRESHOLD:
+            n_caution += 1
+
+    summary: dict[str, Any] = {
+        "variable": var_name,
+        "n_tracts_evaluated": len(cvs),
+        "n_suppressed_or_zero": n_suppressed,
+        "n_caution": n_caution,
+        "n_unreliable": n_unreliable,
+        "median_cv": float(np.median(cvs)) if cvs else None,
+        "p90_cv": float(np.percentile(cvs, 90)) if cvs else None,
+        "max_cv": float(np.max(cvs)) if cvs else None,
+    }
+    return summary
+
+
+def fetch_acs_tract_marginal(var: str) -> TractMarginal:
     """Fetch one ACS variable for all CA tracts via the aggregated-tables API.
     Returns {tract_geoid: float}.
 
@@ -522,21 +629,40 @@ def fetch_acs_tract_marginal(var: str) -> dict:
     response would silently break downstream cohorts whose marginals depend
     on it, so we warn and refuse to cache. The next pipeline run will retry.
     """
-    cached = CACHE / f"acs_tract_{var}.json"
-    if cached.exists():
-        cached_data = json.loads(cached.read_text())
+    # MOE variable code follows the ACS convention: the same code with the
+    # 'E' (estimate) suffix replaced by 'M' (margin of error). E.g.
+    # B11001_006E -> B11001_006M. We refuse non-_E inputs so callers don't
+    # accidentally pass percent estimates (_PE) or annotations (_EA).
+    if not var.endswith("E"):
+        raise ValueError(
+            f"Expected ACS variable code to end with 'E', got {var!r}. "
+            "Only estimate variables are supported (e.g., B11001_006E)."
+        )
+    moe_var = var[:-1] + "M"
+
+    cached_e = CACHE / f"acs_tract_{var}.json"
+    cached_m = CACHE / f"acs_tract_{moe_var}.json"
+    if cached_e.exists() and cached_m.exists():
+        estimates = json.loads(cached_e.read_text())
+        moes = json.loads(cached_m.read_text())
+        # NaN doesn't round-trip through JSON; values written as `null` come
+        # back as Python None and need to be restored.
+        moes = {
+            k: (float(v) if v is not None else float("nan")) for k, v in moes.items()
+        }
         # Defensive: even if a previous run wrote a bad cache (e.g., from
         # before this guard was added), surface the issue at load time.
-        if cached_data and not any(v != 0 for v in cached_data.values()):
+        if estimates and not any(v != 0 for v in estimates.values()):
             print(
                 f"[warn] cached tract marginal {var} is 100% zeros; "
                 "possible tract-level suppression. Delete "
                 f"cache/acs_tract_{var}.json and re-run to retry."
             )
-        return cached_data
+        return TractMarginal(estimates=estimates, moes=moes)
 
-    url = f"{ACS_API}?get=NAME,{var}&for=tract:*&in=state:06"
-    print(f"[fetch] ACS tract var {var}")
+    # Fetch estimate and MOE together in a single API call.
+    url = f"{ACS_API}?get=NAME,{var},{moe_var}&for=tract:*&in=state:06"
+    print(f"[fetch] ACS tract var {var} (with MOE {moe_var})")
     r = requests.get(url, timeout=120)
     r.raise_for_status()
     rows = r.json()
@@ -544,34 +670,74 @@ def fetch_acs_tract_marginal(var: str) -> dict:
     state_idx = header.index("state")
     county_idx = header.index("county")
     tract_idx = header.index("tract")
-    var_idx = header.index(var)
-    out: dict[str, float] = {}
+    e_idx = header.index(var)
+    m_idx = header.index(moe_var)
+
+    estimates: dict[str, float] = {}
+    moes: dict[str, float] = {}
     for row in data:
         geoid = row[state_idx] + row[county_idx] + row[tract_idx]
-        try:
-            out[geoid] = float(row[var_idx]) if row[var_idx] not in (None, "") else 0.0
-        except (TypeError, ValueError):
-            out[geoid] = 0.0
 
-    nonzero = sum(1 for v in out.values() if v != 0)
-    total = sum(out.values())
-    if out and nonzero == 0:
+        # Parse estimate. ACS uses negative special codes for various
+        # suppression / not-applicable reasons (e.g., -555555555). Clamp those
+        # to 0 to preserve the pre-MOE behavior of downstream code.
+        try:
+            raw_est = (
+                float(row[e_idx]) if row[e_idx] not in (None, "") else 0.0
+            )
+        except (TypeError, ValueError):
+            raw_est = 0.0
+        estimates[geoid] = max(raw_est, 0.0)
+
+        # Parse MOE. ACS publishes MOEs as non-negative reals; negative codes
+        # indicate the MOE is not published for that cell. Treat all such
+        # cases as NaN so the reliability calculation can distinguish them
+        # from a genuinely published 0.0 MOE (controlled total).
+        try:
+            raw_moe = (
+                float(row[m_idx]) if row[m_idx] not in (None, "") else float("nan")
+            )
+        except (TypeError, ValueError):
+            raw_moe = float("nan")
+        moes[geoid] = raw_moe if (np.isfinite(raw_moe) and raw_moe >= 0) else float("nan")
+
+    nonzero = sum(1 for v in estimates.values() if v != 0)
+    total = sum(estimates.values())
+    if estimates and nonzero == 0:
         # All-zero response. Warn and refuse to cache so the next run retries
         # rather than silently using the bad data forever.
         print(
-            f"[warn] {var}: API returned {len(out):,} tracts, ALL ZEROS. "
+            f"[warn] {var}: API returned {len(estimates):,} tracts, ALL ZEROS. "
             "This usually indicates tract-level suppression for this table; "
             "consider switching to a collapsed/published alternative (e.g., "
             "C16001 instead of B16001). Not caching."
         )
-        return out
+        return TractMarginal(estimates=estimates, moes=moes)
 
-    cached.write_text(json.dumps(out))
-    print(
-        f"[fetch] {var}: {len(out):,} tract values "
-        f"({nonzero:,} nonzero, sum={total:,.0f})"
+    # NaN is not valid JSON; serialise as `null` and the reload path restores
+    # them to float('nan').
+    cached_e.write_text(json.dumps(estimates))
+    cached_m.write_text(
+        json.dumps({k: (v if np.isfinite(v) else None) for k, v in moes.items()})
     )
-    return out
+
+    # Quick reliability snapshot at fetch time (Census Bureau 2020 thresholds).
+    reliability = _summarize_marginal_reliability(estimates, moes, var_name=var)
+    if reliability["median_cv"] is not None:
+        print(
+            f"[fetch] {var}: {len(estimates):,} tract values "
+            f"({nonzero:,} nonzero, sum={total:,.0f}); "
+            f"reliability median CV={reliability['median_cv']:.2f} "
+            f"caution={reliability['n_caution']:,} "
+            f"unreliable={reliability['n_unreliable']:,} "
+            f"suppressed/zero={reliability['n_suppressed_or_zero']:,}"
+        )
+    else:
+        print(
+            f"[fetch] {var}: {len(estimates):,} tract values "
+            f"({nonzero:,} nonzero, sum={total:,.0f})"
+        )
+    return TractMarginal(estimates=estimates, moes=moes)
 
 
 def fetch_tracts_geojson() -> dict:
@@ -1303,6 +1469,7 @@ def _process_one_cohort_for_tracts(
     puma_centroids: dict[str, tuple[float, float]] | None,
     n_bootstrap: int,
     bootstrap_n_jobs: int,
+    marginal_moes: list[dict[str, float]] | None = None,
 ) -> tuple[str, dict[str, float], dict]:
     """Per-cohort tract-allocation worker. Top-level so joblib (loky backend)
     can pickle it across worker processes.
@@ -1324,6 +1491,20 @@ def _process_one_cohort_for_tracts(
                 continue
             agg[puma] += val
         puma_marginals.append(dict(agg))
+
+    # ── Per-marginal reliability disclosure ──
+    # For each declared tract marginal, compute the share of tracts whose
+    # ACS-published 90% MOE places the estimate in the "use with caution"
+    # or "unreliable" bands of Census Bureau (2020). This is a disclosure
+    # step only: the regression still uses the point estimates as inputs.
+    # Spielman & Singleton (2015) develop why this disclosure matters for
+    # any defensible small-area classification using ACS data.
+    marginal_reliability: list[dict] = []
+    if marginal_moes is not None and len(marginal_moes) == len(marginals_list):
+        for name, est_dict, moe_dict in zip(marginal_names, marginals_list, marginal_moes):
+            marginal_reliability.append(
+                _summarize_marginal_reliability(est_dict, moe_dict, var_name=name)
+            )
 
     # ── Try regression ──
     model = None
@@ -1370,33 +1551,97 @@ def _process_one_cohort_for_tracts(
         # still controls absolute totals via raking_target.
         feature_stds = model["feature_stds"]
         coefs = model["coefs"]
+        # Back-transform standardized coefficients to raw units for tract-level
+        # prediction. β_raw_k = β_std_k / σ_k. Index 0 is population, indices
+        # 1..K map onto marginals_list[0..K-1] and marginal_moes[0..K-1].
+        coefs_raw = [
+            (coefs[k] / feature_stds[k]) if feature_stds[k] > 0 else 0.0
+            for k in range(len(coefs))
+        ]
 
         def predict(t: str) -> float:
             raw_features = [tract_pop.get(t, 0.0)] + [
                 marg.get(t, 0.0) for marg in marginals_list
             ]
-            pred = 0.0
-            for k, x_k in enumerate(raw_features):
-                s = feature_stds[k]
-                if s > 0:
-                    pred += (coefs[k] / s) * x_k
+            pred = sum(c * x for c, x in zip(coefs_raw, raw_features))
             return max(pred, 0.0)
+
+        def prediction_se(t: str) -> float:
+            """MOE-propagated standard error of predict(t).
+
+            For pred(t) = Σ_k β_raw_k · x_k(t), with ACS published 90% MOE on
+            each x_k(t) and treating MOEs across distinct ACS table cells as
+            independent (standard inverse-variance combination, Cochran 1937;
+            Hartung, Knapp & Sinha 2008), the propagated variance is
+                Var(pred(t)) = Σ_k β_raw_k² · (MOE_k(t) / 1.645)²
+            where 1.645 is the 90%-CI z-score the Census Bureau publishes
+            against. Population (k=0) is treated as having zero MOE because
+            B01003 is a controlled total in ACS detailed tables.
+            """
+            if marginal_moes is None or len(marginal_moes) != len(marginals_list):
+                return 0.0
+            var = 0.0
+            for k, moe_dict in enumerate(marginal_moes):
+                moe = moe_dict.get(t, float("nan"))
+                if not np.isfinite(moe) or moe < 0:
+                    continue
+                sd_k = moe / ACS_MOE_Z90
+                # marginal_moes[k] is the MOE for marginals_list[k], which
+                # corresponds to coefs_raw[k + 1] (index 0 is population).
+                var += (coefs_raw[k + 1] ** 2) * (sd_k ** 2)
+            return float(np.sqrt(max(var, 0.0)))
+
+        # MOE-weighted raking. When MOEs are available for every declared
+        # marginal, weight each tract's predicted share by 1/(SE(t)² + ε)
+        # before raking to the EBLUP total. Tracts whose marginal cells carry
+        # large ACS sampling uncertainty contribute proportionally less to
+        # within-PUMA allocation; mass shifts to tracts where the predicted
+        # share rests on reliable marginal counts. The PUMA-level FH+EBLUP
+        # totals are unchanged. See Cochran (1937) for inverse-variance
+        # combination, Spielman & Singleton (2015) for the small-area-
+        # classification motivation, and METHODOLOGY.md "Step 4" for the full
+        # derivation and citation of the alternative Bayesian-propagation
+        # approach that was deliberately not chosen.
+        moe_weighted_raking = (
+            marginal_moes is not None
+            and len(marginal_moes) == len(marginals_list)
+            and len(marginals_list) > 0
+        )
+        # Small ε in 1/(SE² + ε) prevents divide-by-zero for tracts whose
+        # marginals all carry zero published MOE (controlled totals). Setting
+        # ε = 1.0 means a zero-SE tract receives weight = 1.0 rather than
+        # ±∞ relative to the rest of the PUMA; this is a numerical safeguard
+        # rather than a substantive choice (it does not pull data-driven
+        # estimates toward the noise floor).
+        SE_VAR_EPS = 1.0
 
         for puma, tract_geoids in tracts_by_puma.items():
             puma_score = raking_target(puma)
             if puma_score == 0:
                 continue
             raw = {t: predict(t) for t in tract_geoids}
-            raw_sum = sum(raw.values())
-            if raw_sum <= 0:
+            if moe_weighted_raking:
+                weights = {
+                    t: 1.0 / (prediction_se(t) ** 2 + SE_VAR_EPS)
+                    for t in tract_geoids
+                }
+                weighted_raw = {t: raw[t] * weights[t] for t in tract_geoids}
+            else:
+                weighted_raw = raw
+            weighted_sum = sum(weighted_raw.values())
+            if weighted_sum <= 0:
                 share = 1.0 / len(tract_geoids) if tract_geoids else 0
                 for t in tract_geoids:
                     cohort_tract_scores[t] = round(puma_score * share, 2)
             else:
-                factor = puma_score / raw_sum
+                factor = puma_score / weighted_sum
                 for t in tract_geoids:
-                    if raw[t] > 0:
-                        cohort_tract_scores[t] = round(raw[t] * factor, 2)
+                    if weighted_raw[t] > 0:
+                        cohort_tract_scores[t] = round(weighted_raw[t] * factor, 2)
+
+        model["moe_weighted_raking"] = moe_weighted_raking
+        if marginal_reliability:
+            model["marginal_reliability"] = marginal_reliability
         return sub_id, cohort_tract_scores, model
 
     # Fallback: equal-weight share-blend, or uniform if no marginals.
@@ -1440,6 +1685,8 @@ def _process_one_cohort_for_tracts(
         "fallback_reason": fallback_reason,
         "rejected_model": model,  # preserved for transparency if regression ran
     }
+    if marginal_reliability:
+        summary["marginal_reliability"] = marginal_reliability
     return sub_id, cohort_tract_scores, summary
 
 
@@ -1453,6 +1700,7 @@ def distribute_to_tracts(
     puma_score_variance: dict[str, dict[str, float]] | None = None,
     puma_centroids: dict[str, tuple[float, float]] | None = None,
     n_bootstrap: int = DEFAULT_N_BOOTSTRAP,
+    tract_marginal_moes_by_cohort: dict[str, list[dict[str, float]]] | None = None,
 ) -> tuple[dict, dict]:
     """Distribute PUMA-level cohort scores to tracts via area-level SAE.
 
@@ -1511,6 +1759,11 @@ def distribute_to_tracts(
                 p: puma_score_variance.get(p, {}).get(sub_id, 0.0)
                 for p in puma_score_variance
             }
+        cohort_marginal_moes = (
+            tract_marginal_moes_by_cohort.get(sub_id, [])
+            if tract_marginal_moes_by_cohort is not None
+            else []
+        )
         cohort_inputs.append(
             (
                 sub_id,
@@ -1518,6 +1771,7 @@ def distribute_to_tracts(
                 cohort_marginal_names.get(sub_id, []),
                 cohort_puma_scores,
                 cohort_puma_variance,
+                cohort_marginal_moes,
             )
         )
 
@@ -1538,6 +1792,7 @@ def distribute_to_tracts(
                 puma_centroids,
                 n_bootstrap,
                 bootstrap_n_jobs_effective,
+                marginal_moes,
             )
             for (
                 sub_id,
@@ -1545,6 +1800,7 @@ def distribute_to_tracts(
                 names,
                 cohort_puma_scores,
                 cohort_puma_variance,
+                marginal_moes,
             ) in cohort_inputs
         ]
     else:
@@ -1569,6 +1825,7 @@ def distribute_to_tracts(
                 puma_centroids,
                 n_bootstrap,
                 bootstrap_n_jobs_effective,
+                marginal_moes,
             )
             for (
                 sub_id,
@@ -1576,6 +1833,7 @@ def distribute_to_tracts(
                 names,
                 cohort_puma_scores,
                 cohort_puma_variance,
+                marginal_moes,
             ) in cohort_inputs
         )
 
@@ -1920,27 +2178,36 @@ def main() -> None:
 
     # Tract population — used as the size term in the regression.
     print("[tract] fetching tract population (B01003_001E)...")
-    tract_pop = fetch_acs_tract_marginal("B01003_001E")
+    tract_pop = fetch_acs_tract_marginal("B01003_001E").estimates
 
-    # For each cohort, pull every declared tract marginal.
+    # For each cohort, pull every declared tract marginal. We keep two
+    # parallel lists per cohort: point estimates (used for the regression
+    # and tract allocation, as before) and MOEs (used for per-marginal
+    # reliability disclosure under Census Bureau 2020 CV thresholds).
     tract_marginals_by_cohort: dict[str, list[dict[str, float]]] = {}
+    tract_marginal_moes_by_cohort: dict[str, list[dict[str, float]]] = {}
     cohort_marginal_names: dict[str, list[str]] = {}
     for sub in subcultures:
         specs = parse_marginal_specs(sub)
         if not specs:
             print(f"[tract] {sub['id']}: no tract marginals declared; will fall back to uniform")
             tract_marginals_by_cohort[sub["id"]] = []
+            tract_marginal_moes_by_cohort[sub["id"]] = []
             cohort_marginal_names[sub["id"]] = []
             continue
         margs: list[dict[str, float]] = []
+        marg_moes: list[dict[str, float]] = []
         names: list[str] = []
         for var in specs:
             try:
-                margs.append(fetch_acs_tract_marginal(var))
+                fetched = fetch_acs_tract_marginal(var)
+                margs.append(fetched.estimates)
+                marg_moes.append(fetched.moes)
                 names.append(var)
             except Exception as e:
                 print(f"[tract] {sub['id']}: failed to fetch {var} ({e}); skipping this marginal")
         tract_marginals_by_cohort[sub["id"]] = margs
+        tract_marginal_moes_by_cohort[sub["id"]] = marg_moes
         cohort_marginal_names[sub["id"]] = names
 
     # Build PUMA queen-contiguity spatial weights for Moran's I diagnostics.
@@ -1971,6 +2238,7 @@ def main() -> None:
         puma_score_variance=puma_score_variance if puma_score_variance else None,
         puma_centroids=puma_centroids if puma_centroids else None,
         n_bootstrap=DEFAULT_N_BOOTSTRAP,
+        tract_marginal_moes_by_cohort=tract_marginal_moes_by_cohort,
     )
     out_tract_scores = DATA / "tract_scores.json"
     out_tract_scores.write_text(json.dumps(tract_scores))
