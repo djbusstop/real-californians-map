@@ -17,13 +17,13 @@ export interface Subculture {
 
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
 
+// Only cohorts present in subcultures.yaml's active set should appear here.
+// Sidelined cohorts live in data-pipeline/subcultures_library.yaml; their
+// COLORS entries are deliberately left in lib/colors.ts so reviving a
+// cohort is just: move it back into subcultures.yaml, add it here, rerun.
 const SUBCULTURES: Subculture[] = [
-  { id: "queer_leftist", name: "Queer leftist", vibe: "takes the bus to therapy. hates capitalism but isn't bad at it" },
-  { id: "married_gays", name: "Married gays", vibe: "literally any gay married couple. that's the whole thing." },
-  { id: "bilingual_baddie", name: "Bilingual baddies", vibe: "she's bilingual. she has a job. and she's beautiful" },
-  { id: "crumbl_cookie_couple", name: "Crumbl cookie couple", vibe: "she has to get home to watch deal or no deal island" },
-  { id: "hill_people", name: "California hillbilly", vibe: "acid-dropping libertarian racists with more guns than teeth" },
-  { id: "crazy_person", name: "Crazy person on the bus", vibe: "yells at the bus stop, talks to themself on the way to nowhere in particular, isn't well, isn't OK" },
+  { id: "teen_boy", name: "Teen boy", vibe: "halo with the headset on, skateboard in the garage, mom does carpools, dad's working late" },
+  { id: "younger_sister", name: "Younger sister", vibe: "wants a horse but doesn't actually like the riding lessons. polly pockets. her brother picks what's on tv." },
 ];
 
 export default function Home() {

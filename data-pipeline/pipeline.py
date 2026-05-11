@@ -169,6 +169,11 @@ PERSON_VARS = [
     "PUBCOV",     # any public health insurance (1 yes, 2 no)
     "HINS1",      # employer-based health insurance (1 yes, 2 no)
     "WKL",        # when last worked (1 within 12 mo, 2 1-5 yrs ago, 3 5+ yrs ago, 4 never)
+    "ESP",        # employment status of parents (only defined for own-children <18).
+                  # Codes: 1 two parents both LF, 2 two parents father-only LF,
+                  # 3 two parents mother-only LF, 4 two parents neither LF,
+                  # 5 father only & LF, 6 father only not LF, 7 mother only & LF,
+                  # 8 mother only not LF. Identity gate for teen_boy cohort.
 ]
 
 # PUMS replicate weights (PWGTP1..PWGTP80) for successive-difference replication

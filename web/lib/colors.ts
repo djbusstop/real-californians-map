@@ -8,6 +8,8 @@ export const COLORS: Record<string, string> = {
   crumbl_cookie_couple: "#ec4899", // pink-500
   hill_people: "#15803D", // green-700, clearly green at dot scale
   crazy_person: "#2e3745", // slate-600, somber concrete
+  teen_boy: "#2563eb", // blue-600, confident-suburban-boy blue
+  younger_sister: "#d946ef", // fuchsia-500, distinct from crumbl pink and married_gays lavender
 };
 
 export const FALLBACK_COLOR = "#7eaaff";

@@ -1,0 +1,422 @@
+# California Subculture Library — ARCHIVED.
+#
+# This file is NOT loaded by the pipeline. It exists as a reference library
+# of cohort definitions that were active at some point but have been
+# sidelined to keep the active set focused. To restore a cohort: copy its
+# block back into the `subcultures:` list in subcultures.yaml.
+#
+# The shape of each cohort matches subcultures.yaml exactly so cohorts can
+# be moved back and forth verbatim. The `settings:` block is intentionally
+# omitted — settings live in subcultures.yaml only.
+
+subcultures:
+  - id: queer_leftist
+    name: Queer leftist
+    vibe: takes the bus to therapy. hates capitalism but isn't bad at it
+    # Queer-coded leftist lifestyle: creative / social-service / education
+    # occupations, transit-no-car, urban renter, college-educated, part-time-
+    # bonused. SAME_SEX = 1 is a heavy soft signal but not gated — only ~20%
+    # of LGBTQ adults are in same-sex households at any time, so a hard
+    # gate would render the single-LGBTQ majority invisible.
+    threshold: 0.45
+    tract_marginals:
+      - B11001_006E # nonfamily households (single adults, roommates, unmarried partners)
+      - B25024_005E # 3-4 unit apartment buildings (small)
+      - B25024_006E # 5-9 unit apartment buildings (mid)
+      - B08301_010E # workers commuting by public transportation excl. taxi (transit-rich queer-leftist geography)
+    vector:
+      # ───── Hard gates ─────
+      - { field: SAME_SEX, op: eq, value: 1, weight: 6 } # queer signal (heavy soft, see header)
+      - { field: AGEP, op: range, value: [18, 40], weight: 1.5, required: true } # 18-40
+      - { field: SCHL, op: gte, value: 19, weight: 1.5, required: true } # some college or higher (admits baristas, service workers)
+      - { field: SCHL, op: gte, value: 21, weight: 1 } # bachelor's+ (extra weight for the educated subset)
+      - { field: SCH, op: in, value: [2, 3], weight: 2.5 } # currently enrolled in school (queer leftists skew student)
+      - { field: LAPTOP, op: eq, value: 1, weight: 1.5, required: true } # has a computer in the household
+      - { field: BROADBND, op: eq, value: 1, weight: 1, required: true } # has internet at home
+      - { field: ESR, op: in, value: [1, 2, 3], weight: 1, required: true } # not retired
+      - { field: WKL, op: in, value: [1, 2], weight: 1, required: true } # worked within 5 years (admits gap-year and between-jobs)
+
+      # ───── Mental-health / disability signal (heavy weight per editorial intent) ─────
+      - { field: DREM, op: eq, value: 1, weight: 3 } # cognitive / mental-health difficulty
+      - { field: DIS, op: eq, value: 1, weight: 1.5 } # any disability (supports DREM)
+      - { field: PUBCOV, op: eq, value: 1, weight: 1 } # public health coverage (Medi-Cal / ACA exchange — acceptable, not strongly defining)
+
+      # ───── Health insurance (employer-based acceptable, not penalized) ─────
+      - { field: HINS1, op: eq, value: 1, weight: 1 } # employer-based health insurance
+
+      # ───── Family / household structure: single, no kids, flatshare or partnered ─────
+      - { field: MAR, op: in, value: [3, 4, 5], weight: 1.5 } # not currently married (divorced / separated / never married)
+      - { field: MAR, op: eq, value: 5, weight: 0.5 } # never married (extra)
+      - { field: HUPAOC, op: eq, value: 4, weight: 1.5 } # no own children present
+      - { field: FER, op: eq, value: 2, weight: 0.5 } # didn't give birth in last 12 mo
+      - { field: HHT, op: in, value: [5, 7], weight: 3 } # nonfamily multi-person household (FLATSHARE — strongly defining)
+      - { field: RELSHIPP, op: in, value: [34, 35, 36], weight: 2 } # housemate / roommate / unrelated nonpartner (FLATSHARE)
+      - { field: PARTNER, op: eq, value: 2, weight: 1.5 } # same-sex unmarried partner present
+
+      # ───── Occupation: arts / social service / education / nonprofit (STEM down-weighted) ─────
+      - { field: OCCP, op: occupation_soc_major, value: [27], weight: 3 } # arts / design / entertainment / sports / media (CREATIVE — strongly defining)
+      - { field: OCCP, op: occupation_soc_major, value: [21], weight: 3 } # community and social service (strongly defining)
+      - { field: OCCP, op: occupation_soc_major, value: [25], weight: 2.5 } # education / training / library
+      - { field: OCCP, op: occupation_soc_major, value: [35], weight: 1.5 } # food preparation and serving (barista, server)
+      - { field: OCCP, op: occupation_soc_major, value: [15, 17], weight: 0.5 } # STEM: down-weighted to remove Silicon Valley bias
+      - { field: OCCP, op: occupation_soc_major, value: [19, 29], weight: 1.5 } # life/physical/social science / healthcare practitioner
+      - {
+          field: OCCP,
+          op: occupation_soc_major,
+          value: [23, 31, 39, 41],
+          weight: 1,
+        } # legal / healthcare-support / personal care / sales (public-facing service work)
+      - { field: COW, op: eq, value: 2, weight: 2 } # nonprofit (queer-leftist signature workplace)
+      - { field: COW, op: in, value: [3, 4, 5], weight: 1.5 } # federal / state / local government employee
+      - { field: COW, op: in, value: [1, 6, 7], weight: 0.5 } # private wage / self-employed (acceptable but not the strongest signal)
+      - {
+          field: INDP,
+          op: industry_naics,
+          value: [51, 54, 61, 62, 71, 72],
+          weight: 1.5,
+        } # info / professional / education / healthcare / arts / accommodation-food
+
+      # ───── Commute: transit, no car, sometimes WFH ─────
+      - { field: VEH, op: eq, value: 0, weight: 2.5 } # no vehicles (TAKES THE BUS)
+      - { field: VEH, op: lte, value: 1, weight: 1 } # 0 or 1 vehicle
+      - { field: JWTRNS, op: in, value: [3, 4, 5, 6, 7, 11, 12], weight: 1.5 } # bus / streetcar / subway / rail / ferry / walk / bike
+      - { field: JWTRNS, op: eq, value: 14, weight: 1.5 } # works from home (sometimes)
+
+      # ───── Income: broad middle (excludes luxury, includes nurses / public-defenders / educators) ─────
+      - { field: HINCP, op: range, value: [30000, 130000], weight: 1.5 } # household income middle-broad (includes public-sector professionals)
+      - { field: PINCP, op: range, value: [20000, 90000], weight: 1.5 } # personal income middle-broad
+      - { field: HINCP, op: lte, value: 200000, weight: 0.5 } # cap (not luxury household)
+      - { field: POVPIP, op: range, value: [100, 250], weight: 1 } # above poverty line but not far above (small bonus for not-rich)
+      - { field: WAGP, op: gte, value: 1, weight: 0.5 } # has wage income
+
+      # ───── Work hours: part-time bonused, full-time acceptable ─────
+      - { field: WKHP, op: range, value: [1, 30], weight: 1.5 } # part-time work (creative under-employment, strongly bonused)
+      - { field: WKHP, op: gte, value: 35, weight: 0.5 } # full-time work (acceptable, not strongly defining)
+
+      # ───── Mobility: same-house OK, recent mover OK; no rooted-suburban bonus ─────
+      - { field: MIG, op: eq, value: 1, weight: 0.5 } # same house a year ago (settled is OK, small bonus)
+      - { field: MV, op: in, value: [1, 2], weight: 0.5 } # moved within last 4 years (urban migration flow)
+
+      # ───── Housing: renter, dense urban, older building ─────
+      - { field: TEN, op: eq, value: 3, weight: 2 } # renter
+      - { field: BLD, op: in, value: [3, 4, 5, 6, 7, 8, 9], weight: 1.5 } # any dense urban housing (attached SFH through high-rise)
+      - { field: BLD, op: in, value: [3, 4, 5, 6], weight: 0.5 } # small-scale (townhouse, duplex, small apt — extra small bonus)
+      - { field: YRBLT, op: lte, value: 1970, weight: 1.5 } # built 1970s or earlier
+      - { field: YRBLT, op: lte, value: 1950, weight: 0.5 } # built 1950s or earlier (extra small bonus)
+      - { field: BDSP, op: lte, value: 2, weight: 0.5 } # smaller unit (1-2 BR)
+
+      # ───── Identity / diversity (race as soft signal — single documented exception) ─────
+      - { field: RAC1P, op: in, value: [2, 3, 4, 5, 6, 7, 8, 9], weight: 1 } # non-white identity (queer-leftist communities skew non-white in CA)
+      - { field: HISP, op: gte, value: 2, weight: 0.5 } # Hispanic origin
+    proxy_gap: |
+      "Leftist" and "queer" are both inferred, not measured. SAME_SEX = 1
+      (heavy soft) catches partnered queer records; the lifestyle bundle
+      (creative or social-service occupation, no-car-urban-renter, part-time-
+      bonused, DREM, nonfamily household, college enrolment) catches single
+      LGBTQ records and lifestyle-aligned leftist allies. Cultural performance,
+      politics, and religion are not capturable in PUMS. The DREM weight
+      encodes the LGBTQ minority-stress correlation (Meyer 2003) but is
+      broader than psychiatric diagnosis. The CA non-white-identity weight
+      is the single documented exception to the no-race-gating principle
+      (see METHODOLOGY).
+
+  - id: married_gays
+    name: Married gays
+    vibe: literally any gay married couple. that's the whole thing.
+    # B11009 (same-sex households) is suppressed at tract level in 2023
+    # ACS 5-Year. Using nonfamily-household + apartment proxies; the
+    # SAME_SEX = 1 hard gate at PUMS level still concentrates the cohort
+    # in queer-coded PUMAs.
+    tract_marginals:
+      - B11001_006E # nonfamily households
+      - B25024_005E # 3-4 unit apartment buildings (small)
+      - B25024_006E # 5-9 unit apartment buildings (mid)
+      - B25024_009E # 50+ unit apartment buildings (high-rise)
+    vector:
+      - { field: SAME_SEX, op: eq, value: 1, weight: 2, required: true } # same-sex household
+      - { field: MAR, op: eq, value: 1, weight: 2, required: true } # married
+      - { field: AGEP, op: gte, value: 18, weight: 0.5 } # adult
+    proxy_gap: |
+      Captures same-sex married couples. PUMS classifies same-sex married spouses via RELSHIPP=23,
+      which is what SAME_SEX is derived from. Doesn't distinguish lesbian from gay-male couples in
+      the score, though the tract marginal biases dot placement toward gay-male-coded enclaves.
+
+  - id: crumbl_cookie_couple
+    name: Crumbl cookie couple
+    vibe: newlywed homeowners with a peace lily, a Tesla, and a Bachelor in Paradise watch-party tradition
+    tract_marginals:
+      - B11003_002E # married-couple family households
+      - B25024_002E # 1-unit detached structures (suburban housing)
+      - B19001_016E # households earning $150k-$200k (their income band)
+    vector:
+      # Hard gates
+      - { field: AGEP, op: range, value: [24, 38], weight: 2, required: true }
+      - { field: SCHL, op: gte, value: 19, weight: 1.5, required: true } # some college or higher
+      - { field: ESR, op: in, value: [1, 2], weight: 1.5, required: true } # employed
+      - { field: WKHP, op: gte, value: 35, weight: 1, required: true } # full-time work
+      - {
+          field: RELSHIPP,
+          op: in,
+          value: [20, 21, 22, 23, 24],
+          weight: 1,
+          required: true,
+        } # householder or spouse / partner
+      - { field: JWTRNS, op: in, value: [1, 2], weight: 2, required: true } # drove (alone or carpool)
+      - { field: TEN, op: in, value: [1, 3], weight: 1, required: true } # owned with mortgage or rented (excludes "owned free and clear" and "no payment")
+      - { field: TEN, op: eq, value: 1, weight: 3 } # owned with mortgage — heavily bonused (the gold standard for "on the property ladder")
+      - { field: TEN, op: eq, value: 3, weight: 1 } # renter — still counts
+      - { field: HHT, op: eq, value: 1, weight: 1.5, required: true } # married-couple household
+      - { field: HINCP, op: gte, value: 130000, weight: 1.5, required: true } # household income $130k+ (proxy for dual-earner)
+
+      # Couple flavor
+      - { field: MAR, op: eq, value: 1, weight: 1.5 } # married
+
+      # Income range
+      - { field: PINCP, op: range, value: [55000, 100000], weight: 1.5 } # personal income $55-100k
+      - { field: POVPIP, op: gte, value: 400, weight: 0.5 } # well above poverty line
+
+      # Housing — suburban-coded, newly bought
+      - { field: BLD, op: in, value: [2, 3], weight: 2 } # single-family detached or attached
+      - { field: VEH, op: gte, value: 2, weight: 3 } # two cars — one per partner (heavy soft signal)
+      - { field: MV, op: in, value: [1, 2], weight: 1.5 } # moved in within last 4 years (newly on the ladder)
+      - { field: VALP, op: lte, value: 1500000, weight: 1 } # property value under $1.5M
+      - { field: HFL, op: in, value: [1, 3], weight: 0.5 } # utility gas or electric heat (suburban hookups)
+      - { field: BDSP, op: gte, value: 3, weight: 0.5 } # 3+ bedrooms (the starter-family home)
+
+      # Mainstream / connected
+      - { field: BROADBND, op: eq, value: 1, weight: 0.5 } # has broadband
+      - { field: LAPTOP, op: eq, value: 1, weight: 0.5 } # has a computer
+      - { field: AGS, op: eq, value: 1, weight: 0.5 } # no agricultural sales (not rural)
+
+      # Family flavor
+      - { field: FER, op: eq, value: 1, weight: 0.5 } # gave birth in last 12 mo (new parents)
+      - { field: MULTG, op: eq, value: 2, weight: 0.5 } # not multigenerational
+    proxy_gap: |
+      Captures young married new-homeowner suburban couples doing the standard W2-and-mortgage life.
+      Doesn't capture Taylor Swift fandom, golf habits, religious affiliation, or any of the other
+      cultural details. The visible map is "demographically boring" and that IS the archetype.
+
+  - id: bilingual_baddie
+    name: Bilingual baddies
+    vibe: she's bilingual, she has to work, and she's fine with it DAMN
+    # B16001 (detailed language) is suppressed at tract level in 2023 ACS
+    # 5-Year. Switched to C16001 (collapsed language table) which publishes
+    # cleanly. Note: Punjabi and Armenian roll into C16001_015E "Other
+    # Indo-European" alongside Persian, Hindi, Greek; we lose specificity.
+    tract_marginals:
+      - B03002_012E # total Hispanic / Latino population
+      - C16001_003E # Spanish at home
+      - C16001_027E # Tagalog at home (daly city, vallejo, west covina, san diego)
+      - C16001_024E # Vietnamese at home (westminster, garden grove, east san jose)
+      - C16001_015E # Other Indo-European at home (rolls Punjabi, Armenian, Hindi, Persian)
+    vector:
+      # Hard gates
+      - { field: SEX, op: eq, value: 2, weight: 1.5, required: true } # female
+      - { field: LANX, op: eq, value: 1, weight: 2, required: true } # non-English at home
+      - { field: AGEP, op: range, value: [19, 29], weight: 2, required: true } # young (peak baddie era)
+      - { field: MAR, op: in, value: [3, 4, 5], weight: 1.5, required: true } # not currently married (single)
+      - { field: HHT, op: in, value: [1, 2, 3, 5, 7], weight: 1, required: true } # lives with people (family or shared nonfamily, not alone)
+
+      # English ability — strong soft signal, not required (some Paso-style baddies aren't fluent yet)
+      - { field: ENG, op: lte, value: 2, weight: 1.5 }
+
+      # Never-married subset gets an extra small bonus
+      - { field: MAR, op: eq, value: 5, weight: 0.5 } # never married
+
+      # Living-situation flavor (gate already requires not-alone; bonus the lives-with-family subset)
+      - { field: HHT, op: in, value: [1, 2, 3], weight: 1 } # family household — Mission-style baddie
+      - { field: RELSHIPP, op: in, value: [25, 26, 27, 30, 33], weight: 1 } # child / relative of householder
+
+      # Identity
+      - { field: NATIVITY, op: eq, value: 1, weight: 1 } # US-born helps (second gen)
+
+      # Work
+      - {
+          field: OCCP,
+          op: occupation_soc_major,
+          value: [29, 31, 35, 39, 41, 23],
+          weight: 2,
+        }
+        # 29 healthcare, 31 healthcare support, 35 food, 39 personal care (beauty/nails/hair), 41 sales, 23 legal
+      - {
+          field: OCCP,
+          op: occupation_soc_major,
+          value: [39, 31, 41],
+          weight: 1,
+        }
+        # extra boost for beauty / healthcare-support / sales — most baddie-coded subset
+      - { field: WAGP, op: gte, value: 1, weight: 0.5 } # has wage income
+      - { field: PINCP, op: range, value: [20000, 65000], weight: 1.5 } # lower-middle personal income
+    proxy_gap: |
+      "Thicc" is not a census variable. Otherwise: bilingual + young + female + single + lives-with-
+      family + service/healthcare/personal-care/sales work + lower-middle income captures the demographic
+      shape. The aesthetic and cultural flavor (social media presence, style, body type) is unmeasurable.
+
+  - id: hill_people
+    name: California hillbilly
+    vibe: acid-dropping libertarian racists with more guns than teeth
+    tract_marginals:
+      - B25032_010E # owner-occupied mobile homes (sharper than total mobile homes; excludes trailer-park renters)
+      - B25040_007E # wood heat (concentrates Sierra foothills, North Coast, NE California)
+      - B25040_003E # bottled / tank / LP gas (propane) heat — rural off-gas-grid households
+    vector:
+      # Hard gates
+      - { field: AGEP, op: gte, value: 25, weight: 1, required: true } # adult (excludes kids)
+      - { field: SCHL, op: lte, value: 17, weight: 1.5, required: true } # HS, GED, or below
+
+      # Older skews more "toothless" but doesn't define the cohort
+      - { field: AGEP, op: gte, value: 50, weight: 1 }
+      - { field: MAR, op: in, value: [2, 3, 5], weight: 1 } # widowed / divorced / never married — soft, not a gate
+      - { field: ACR, op: gte, value: 2, weight: 2, required: true } # lives on 1+ acres (rural-defining)
+      - { field: BLD, op: in, value: [1, 2], weight: 1, required: true } # mobile home or detached single-family (excludes urban multi-unit edge cases)
+
+      # Income (very low, on benefits)
+      - { field: PINCP, op: lte, value: 22000, weight: 2 }
+      - { field: POVPIP, op: lte, value: 200, weight: 1.5 } # at or near 2x poverty line
+      - { field: SSP, op: gte, value: 1, weight: 1.5 } # Social Security income
+      - { field: SSIP, op: gte, value: 1, weight: 1.5 } # SSI (welfare-adjacent)
+
+      # Work / labor force
+      - { field: ESR, op: in, value: [3, 6], weight: 1.5 } # unemployed or not in labor force
+
+      # Health (chronic mobility / public coverage are strong signals)
+      - { field: DIS, op: eq, value: 1, weight: 1.5 } # any disability
+      - { field: DPHY, op: eq, value: 1, weight: 1.5 } # ambulatory (mobility) difficulty
+      - { field: PUBCOV, op: eq, value: 1, weight: 1.5 } # on Medicare and/or Medi-Cal
+      - { field: WAGP, op: lte, value: 0, weight: 1 } # no wage income (not working)
+
+      # Veteran (some hill folks served)
+      - { field: MIL, op: in, value: [1, 2], weight: 0.5 } # active or past active duty
+
+      # Housing — rural, old, marginal
+      - { field: TEN, op: eq, value: 2, weight: 1.5 } # owned free and clear (paid off ages ago)
+      - { field: HFL, op: in, value: [2, 4, 6], weight: 1.5 } # propane / oil / wood heat
+      - { field: YRBLT, op: lte, value: 1970, weight: 1.5 } # built 1970s or earlier (pre-1980)
+      - { field: BLD, op: eq, value: 1, weight: 1.5 } # mobile home (soft, not required)
+      - { field: ACR, op: eq, value: 3, weight: 3 } # 10+ acres extra (stronger pull toward genuine large-land owners)
+      - { field: VEH, op: gte, value: 1, weight: 0.5 } # has at least one vehicle (need a truck)
+      - { field: VEH, op: gte, value: 2, weight: 1 } # multiple vehicles (rural households)
+      - { field: VEH, op: gte, value: 3, weight: 0.5 } # 3+ vehicles (truck + car + something)
+
+      # Rural lifestyle / isolation / poverty
+      - { field: AGS, op: gte, value: 2, weight: 1 } # any agricultural sales
+      - { field: TEL, op: eq, value: 2, weight: 1 } # no telephone (isolation)
+      - { field: BROADBND, op: eq, value: 2, weight: 1 } # no broadband internet
+      - { field: LAPTOP, op: eq, value: 2, weight: 0.5 } # no laptop / desktop in household
+      - { field: PLM, op: eq, value: 2, weight: 1.5 } # incomplete plumbing (rare, strong signal)
+      - { field: FS, op: eq, value: 1, weight: 1 } # received food stamps in last year
+
+      # Settled forever
+      - { field: MV, op: gte, value: 5, weight: 1.5 } # moved in 20+ years ago
+      - { field: MIG, op: eq, value: 1, weight: 1 } # lived in same place 1 year ago
+    proxy_gap: |
+      Captures the structural fingerprint: rural older marginally-housed folks living on Social
+      Security/SSI in old trailers with wood-or-propane heat. Doesn't capture toothlessness
+      directly (no dental data in census), and doesn't distinguish "hill people" from any rural
+      poor cohort — for that we'd want geographic gating, which we deliberately avoid.
+
+  - id: crazy_person
+    name: Crazy person on the bus
+    vibe: yells at the bus stop, talks to themself on the way to nowhere in particular, isn't well, isn't OK
+    tract_marginals:
+      - B19057_002E # households receiving Supplemental Security Income (SSI)
+      - B22002_002E # households receiving SNAP / food stamps
+      - B27003_004E # population with Medicaid / means-tested public health coverage
+      - B26001_001E # group quarters population (shelters / SROs / halfway houses)
+    vector:
+      # Hard gates
+      - { field: AGEP, op: range, value: [25, 55], weight: 1, required: true } # mid-life adult (peak severe-mental-illness)
+      - { field: DIS, op: eq, value: 1, weight: 2, required: true } # has any disability
+      - { field: PUBCOV, op: eq, value: 1, weight: 2, required: true } # public health insurance (Medicare/Medi-Cal)
+
+      # Mental-health and self-care disabilities (DREM is the defining trait)
+      - { field: DREM, op: eq, value: 1, weight: 5 } # cognitive / mental-health difficulty
+      - { field: DOUT, op: eq, value: 1, weight: 2 } # independent living difficulty
+      - { field: DPHY, op: eq, value: 1, weight: 1 } # ambulatory difficulty
+      - { field: DDRS, op: eq, value: 1, weight: 1 } # self-care difficulty
+
+      # Not in labor force / unemployed
+      - { field: ESR, op: in, value: [3, 6], weight: 2 } # unemployed or not in labor force
+      - { field: WKL, op: in, value: [2, 3, 4], weight: 1 } # last worked 1+ years ago, or never
+      - { field: WKL, op: eq, value: 3, weight: 2 } # last worked 5+ years ago / never (long labor-force detachment)
+
+      # Disability income / public assistance
+      - { field: SSIP, op: gte, value: 1, weight: 2 } # SSI (means-tested disability income)
+      - { field: SSP, op: gte, value: 1, weight: 1 } # Social Security disability income
+      - { field: PAP, op: gte, value: 1, weight: 1 } # any public assistance income
+      - { field: FS, op: eq, value: 1, weight: 1 } # household received food stamps
+
+      # Very low income / poverty (POVPIP <= 100 gated; deeper poverty heavily weighted)
+      - { field: POVPIP, op: lte, value: 100, weight: 2, required: true } # at or below poverty line (hard gate)
+      - { field: POVPIP, op: lte, value: 50, weight: 3 } # deep poverty (heavy bonus)
+      - { field: PINCP, op: lte, value: 10000, weight: 2 } # personal income < $10k
+      - { field: PINCP, op: lte, value: 15000, weight: 1 } # personal income < $15k
+
+      # Family structure: alone
+      - { field: MAR, op: eq, value: 5, weight: 1.5 } # never married
+      - { field: MAR, op: eq, value: 3, weight: 1 } # divorced
+      - { field: HUPAOC, op: eq, value: 4, weight: 1 } # no own children present
+
+      # Precarious housing
+      - { field: TEN, op: eq, value: 4, weight: 2 } # occupied without payment of rent
+      - { field: TEN, op: eq, value: 3, weight: 1 } # rented (also fits)
+      - { field: RELSHIPP, op: eq, value: 38, weight: 3 } # noninstitutionalized group quarters (shelters, halfway houses)
+      - {
+          field: RELSHIPP,
+          op: in,
+          value: [25, 26, 27, 30, 33, 34, 36],
+          weight: 1,
+        } # lives in someone else's household
+      - { field: PLM, op: eq, value: 2, weight: 2 } # incomplete plumbing facilities (no shower / no toilet)
+
+      # Takes the bus (no vehicle)
+      - { field: VEH, op: eq, value: 0, weight: 1.5 } # no vehicles
+      - { field: JWTRNS, op: in, value: [3, 7], weight: 0.5 } # bus or walk for transport (when working)
+
+      # Identity flavor
+      - { field: SCHL, op: lte, value: 17, weight: 0.5 } # HS or below
+      - { field: SEX, op: eq, value: 1, weight: 1.5 } # male (~70% of street-MI population per HUD; soft, not gated)
+    proxy_gap: |
+      Aimed at the severe-untreated-mental-illness archetype. DREM (cognitive
+      / mental-health difficulty) is the heaviest soft signal at weight 5;
+      the structural gate is DIS=1 + PUBCOV=1 + age 25-55. The "stinks like
+      piss" detail is proxied by PLM=2 (incomplete plumbing — no shower /
+      no toilet); the unhoused / sheltered subset is captured by RELSHIPP=38
+      (noninstitutionalized group quarters) and TEN=4 (occupied without
+      payment). PUMS does not reach the entirely unsheltered population.
+      Addiction, psychiatric diagnosis, criminal-justice involvement, and
+      yelling-in-public are unmeasurable. Geography expected: Tenderloin and
+      Mission (SF), Skid Row and parts of Hollywood (LA), East Oakland,
+      central San Diego, downtown Sacramento, plus the working-class non-
+      major cities (Stockton, Modesto, Bakersfield, Fresno, San Bernardino).
+
+  - id: black_californians_sanity
+    name: Black Californians (sanity test)
+    vibe: not editorial. exists to validate the pipeline against a known demographic total.
+    # Single hard gate on PUMS RAC1P = 2 (Black or African American alone).
+    # No soft conditions, default threshold. Expected to produce a weighted
+    # member count near the ACS-published Black-alone total for California
+    # (~2.2-2.3M as of 2023 5-Year). Tract-level allocation after MOE-
+    # weighted raking should closely track B02001_003E (Black alone) tract
+    # counts because the regression has a single non-population predictor
+    # that IS the cohort. If outputs diverge substantially from the ACS
+    # published totals, something is wrong upstream in PUMS scoring,
+    # FH+EBLUP, or raking. This cohort is editorially nothing; it is
+    # validation infrastructure that lives inside the data pipeline.
+    tract_marginals:
+      - B02001_003E # Black or African American alone (tract-level race count)
+    vector:
+      - { field: RAC1P, op: eq, value: 2, weight: 1, required: true }
+    proxy_gap: |
+      Sanity-test cohort with a single hard gate (RAC1P = 2) and no soft
+      conditions. The cohort definition IS the ACS Black-alone race
+      category at the PUMS person level. Validates the full pipeline
+      (PUMS scoring + PWGTP aggregation + SDR variance + FH+EBLUP +
+      MOE-weighted raking) against an external benchmark for which the
+      ACS publishes a known total. Race is normally avoided as a gate
+      under the project's modeling constraints (see METHODOLOGY.md
+      "Modeling constraints"); this is the explicit documented exception
+      for a validation-only cohort. The web app's `SUBCULTURES` and
+      `COLORS` lists deliberately do not include this cohort, so it is
+      scored and validated in the backend but does not render on the
+      public map.
