@@ -20,7 +20,7 @@ const PUMA_CODE_KEYS = ["GEOID", "GEOID20", "GEOIDFQ", "PUMACE20", "PUMA20", "PU
 
 // One dot per N units of weighted score, applied uniformly across subcultures.
 // Smaller subcultures genuinely show as fewer dots — that's the honest picture.
-const DOTS_PER_UNIT = 20;
+const DOTS_PER_UNIT = 10;
 
 const BASEMAP_STYLE = "https://tiles.openfreemap.org/styles/positron";
 
