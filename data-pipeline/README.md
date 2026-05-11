@@ -47,7 +47,7 @@ In `./data/`:
 
 To add or modify a cohort, edit the YAML and re-run `python pipeline.py`. The cached PUMS parquet is reused; only the scoring + small-area pass re-runs.
 
-`FIELDS.md` is the reference for every PUMS variable currently loaded into the DataFrame.
+`../docs/fields.md` is the reference for every PUMS variable currently loaded into the DataFrame.
 
 ## Operators in vector conditions
 

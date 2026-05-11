@@ -4,9 +4,9 @@ Runs ServerState.load() then scores a known cohort (queer_leftist) and
 times each phase. Prints a summary and exits 0 on PASS, 1 on MISS.
 
 Run from anywhere:
-    python3 data-pipeline/tests/_smoke_latency.py
+    python3 data-pipeline/tests/smoke_latency.py
 or from data-pipeline/:
-    python3 tests/_smoke_latency.py
+    python3 tests/smoke_latency.py
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 # Make ``service`` and ``pipeline`` importable regardless of CWD. This
-# file lives at data-pipeline/tests/_smoke_latency.py; the modules it
+# file lives at data-pipeline/tests/smoke_latency.py; the modules it
 # needs live in data-pipeline/ (one level up).
 _DATA_PIPELINE_DIR = Path(__file__).resolve().parent.parent
 if str(_DATA_PIPELINE_DIR) not in sys.path:

@@ -2,7 +2,7 @@
 
 Covers pure functions that do not require ServerState (hash, Gini,
 value normalization). The end-to-end scoring is exercised separately
-by tests/_smoke_latency.py against the loaded pipeline state.
+by tests/smoke_latency.py against the loaded pipeline state.
 
 Run with:
     cd data-pipeline && python3 -m pytest tests/test_service.py -v

@@ -39,7 +39,7 @@ Then open http://localhost:3000.
 
 Open `data-pipeline/subcultures.yaml` and edit any vector. Every condition has a field, an operator, a value, and a weight. `required: true` makes a condition a hard gate; otherwise it's a soft signal that nudges the score. Re-run `python pipeline.py` (uses cached data, ~10 seconds) and `npm run sync-data` to see your changes.
 
-`data-pipeline/FIELDS.md` is the reference for every census variable available, including the ones not currently used.
+`docs/fields.md` is the reference for every census variable available, including the ones not currently used.
 
 ### One-shot rebuild + run (from `web/`)
 

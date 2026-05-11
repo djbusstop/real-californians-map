@@ -413,9 +413,8 @@ that recognition is data the next library revision can act on.
 ### 5.1 Known fields
 
 The `field` value in a vector entry must be one of the loaded PUMS
-variables. The current set is documented separately in
-`docs/pums_field_dictionary.md` (TODO). Backend validation rejects
-unknown fields with a 422 error (see section 8).
+variables. The current set is documented in `docs/fields.md`. Backend
+validation rejects unknown fields with a 422 error (see section 8).
 
 Key field categories:
 
