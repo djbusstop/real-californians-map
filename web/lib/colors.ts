@@ -10,6 +10,8 @@ export const COLORS: Record<string, string> = {
   crazy_person: "#2e3745", // slate-600, somber concrete
   teen_boy: "#2563eb", // blue-600, confident-suburban-boy blue
   younger_sister: "#d946ef", // fuchsia-500, distinct from crumbl pink and married_gays lavender
+  dad: "#78350f", // amber-900, earthy brown
+  mom: "#b91c1c", // red-700, warm grounded red
 };
 
 export const FALLBACK_COLOR = "#7eaaff";

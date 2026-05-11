@@ -22,6 +22,8 @@ const EMPTY_FC: GeoJSON.FeatureCollection = { type: "FeatureCollection", feature
 // COLORS entries are deliberately left in lib/colors.ts so reviving a
 // cohort is just: move it back into subcultures.yaml, add it here, rerun.
 const SUBCULTURES: Subculture[] = [
+  { id: "dad", name: "Dad", vibe: "grills on saturday, coaches on sunday, on the road three nights a week. the wedding band slides off in atlanta." },
+  { id: "mom", name: "Mom", vibe: "drives the kids everywhere, amazon prime daily, pilates. the wine glass is open by 5." },
   { id: "teen_boy", name: "Teen boy", vibe: "halo with the headset on, skateboard in the garage, mom does carpools, dad's working late" },
   { id: "younger_sister", name: "Younger sister", vibe: "wants a horse but doesn't actually like the riding lessons. polly pockets. her brother picks what's on tv." },
 ];

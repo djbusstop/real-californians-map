@@ -89,6 +89,124 @@ subcultures:
       households actually concentrate; the map will reveal rather than
       presume.
 
+  - id: dad
+    name: Dad
+    vibe: grills on saturday, coaches on sunday, on the road three nights a week. the wedding band slides off in atlanta.
+    # Married working father with school-age kids living in the home. Same
+    # household template as teen_boy / younger_sister so geography matches
+    # across the family album. The infidelity in the vibe line is editorial;
+    # PUMS has no signal for it.
+    tract_marginals:
+      - B19001_017E # households earning $200k+ (upper-middle concentration)
+      - B25024_002E # 1-unit detached structures (single-family neighborhoods)
+      - B11003_002E # married-couple family households with own children under 18
+    vector:
+      # ───── Hard gates: married working father with kids 6-17 AT HOME ─────
+      - { field: HUPAOC, op: in, value: [2, 3], weight: 2, required: true } # kids 6-17 in HH (defining: this is a parent, not just a married adult)
+      - { field: AGEP, op: range, value: [35, 55], weight: 2, required: true } # parenting-age adult
+      - { field: SEX, op: eq, value: 1, weight: 1.5, required: true } # male
+      - { field: MAR, op: eq, value: 1, weight: 1.5, required: true } # married
+      - { field: RELSHIPP, op: in, value: [20, 21], weight: 1, required: true } # householder or opposite-sex spouse
+      - { field: HHT, op: eq, value: 1, weight: 1, required: true } # married-couple family HH
+      - { field: ESR, op: in, value: [1, 2], weight: 1.5, required: true } # employed
+      - { field: WKHP, op: gte, value: 35, weight: 1, required: true } # full-time
+      - { field: TEN, op: in, value: [1, 2], weight: 1.5, required: true } # any owner-occupied
+      - { field: TEN, op: eq, value: 1, weight: 1 } # owned-with-mortgage bonus
+      - { field: HINCP, op: gte, value: 80000, weight: 1.5, required: true } # middle-class floor
+      - { field: VEH, op: gte, value: 1, weight: 1.5, required: true } # at least one vehicle
+
+      # ───── Long-hours / breadwinner flavor ─────
+      - { field: WKHP, op: gte, value: 45, weight: 0.5 } # long-hours bonus
+
+      # ───── Income — bonused for higher bands ─────
+      - { field: HINCP, op: gte, value: 120000, weight: 1.5 }
+      - { field: HINCP, op: gte, value: 175000, weight: 1.5 }
+      - { field: HINCP, op: gte, value: 250000, weight: 1 }
+      - { field: POVPIP, op: gte, value: 400, weight: 1 }
+
+      # ───── Mobility: moved recently ─────
+      - { field: MV, op: in, value: [1, 2, 3, 4], weight: 1.5 }
+      - { field: MV, op: in, value: [1, 2, 3], weight: 1 }
+
+      # ───── House profile ─────
+      - { field: YRBLT, op: gte, value: 1990, weight: 1 }
+      - { field: YRBLT, op: gte, value: 2010, weight: 1 }
+      - { field: BDSP, op: gte, value: 4, weight: 1 }
+      - { field: BLD, op: eq, value: 2, weight: 1.5 }
+      - { field: BROADBND, op: eq, value: 1, weight: 0.5 }
+      - { field: LAPTOP, op: eq, value: 1, weight: 0.5 }
+      - { field: VEH, op: gte, value: 2, weight: 1 }
+      - { field: VEH, op: gte, value: 3, weight: 0.5 }
+    proxy_gap: |
+      Married working fathers 35-55 with kids 6-17 LIVING IN THE HOME
+      (HUPAOC in [2, 3] hard-gated) in middle/upper-middle owner-occupied
+      households. The pipeline can't verify that any specific dad record
+      is the father of a specific teen_boy or younger_sister member (no
+      cross-record family joins), but the household template is identical
+      so dad dots cluster in the same neighborhoods. Infidelity, grilling
+      habits, and fantasy-football engagement are unmeasurable; the
+      geography reveals the structural pattern.
+
+  - id: mom
+    name: Mom
+    vibe: drives the kids everywhere, amazon prime daily, pilates. the wine glass is open by 5.
+    # Married mother with school-age kids living in the home. SAHM (ESR=6,
+    # not in labor force) is the archetype but not gated — admits dual-
+    # career and part-time-working moms alongside the SAHM core. Alcoholism
+    # in the vibe line is editorial; PUMS has no signal for it.
+    tract_marginals:
+      - B19001_017E # households earning $200k+ (upper-middle concentration)
+      - B25024_002E # 1-unit detached structures (single-family neighborhoods)
+      - B11003_002E # married-couple family households with own children under 18
+    vector:
+      # ───── Hard gates: married mother with kids 6-17 AT HOME ─────
+      - { field: HUPAOC, op: in, value: [2, 3], weight: 2, required: true } # kids 6-17 in HH (defining: she's a parent, not just a married adult)
+      - { field: AGEP, op: range, value: [33, 53], weight: 2, required: true } # moms skew slightly younger than dads
+      - { field: SEX, op: eq, value: 2, weight: 1.5, required: true } # female
+      - { field: MAR, op: eq, value: 1, weight: 1.5, required: true } # married
+      - { field: RELSHIPP, op: in, value: [20, 21], weight: 1, required: true } # householder or opposite-sex spouse
+      - { field: HHT, op: eq, value: 1, weight: 1, required: true } # married-couple family HH
+      - { field: TEN, op: in, value: [1, 2], weight: 1.5, required: true } # any owner-occupied
+      - { field: TEN, op: eq, value: 1, weight: 1 } # owned-with-mortgage bonus
+      - { field: HINCP, op: gte, value: 80000, weight: 1.5, required: true } # middle-class floor
+      - { field: VEH, op: gte, value: 1, weight: 1.5, required: true } # at least one vehicle
+
+      # ───── SAHM signal — heavy soft, not gated (admits working moms with concentration on SAHM core) ─────
+      - { field: ESR, op: eq, value: 6, weight: 3 } # not in labor force (the archetype)
+      - { field: ESR, op: in, value: [3, 6], weight: 1 } # unemployed or NILF (broader)
+      - { field: WKHP, op: lte, value: 20, weight: 1 } # working part-time at most
+
+      # ───── Income — bonused for higher bands ─────
+      - { field: HINCP, op: gte, value: 120000, weight: 1.5 }
+      - { field: HINCP, op: gte, value: 175000, weight: 1.5 }
+      - { field: HINCP, op: gte, value: 250000, weight: 1 }
+      - { field: POVPIP, op: gte, value: 400, weight: 1 }
+
+      # ───── Mobility: moved recently ─────
+      - { field: MV, op: in, value: [1, 2, 3, 4], weight: 1.5 }
+      - { field: MV, op: in, value: [1, 2, 3], weight: 1 }
+
+      # ───── House profile ─────
+      - { field: YRBLT, op: gte, value: 1990, weight: 1 }
+      - { field: YRBLT, op: gte, value: 2010, weight: 1 }
+      - { field: BDSP, op: gte, value: 4, weight: 1 }
+      - { field: BLD, op: eq, value: 2, weight: 1.5 }
+      - { field: BROADBND, op: eq, value: 1, weight: 0.5 }
+      - { field: LAPTOP, op: eq, value: 1, weight: 0.5 }
+      - { field: VEH, op: gte, value: 2, weight: 1 }
+      - { field: VEH, op: gte, value: 3, weight: 0.5 }
+    proxy_gap: |
+      Married mothers 33-53 with kids 6-17 LIVING IN THE HOME (HUPAOC
+      in [2, 3] hard-gated) in middle/upper-middle owner-occupied
+      households. The "mom likely doesn't work" framing is encoded as
+      heavy soft weight on ESR=6 (not in labor force) rather than a
+      hard gate, so dual-career and part-time-working moms remain in
+      the cohort while SAHM-dense areas concentrate dots. Alcohol
+      consumption, pilates attendance, and Amazon Prime usage are
+      unmeasurable; same household-economic gates and tract marginals
+      as dad / teen_boy / younger_sister so the family album shares
+      geography.
+
   - id: younger_sister
     name: Younger sister
     vibe: wants a horse but doesn't actually like the riding lessons. polly pockets. her brother picks what's on tv.
