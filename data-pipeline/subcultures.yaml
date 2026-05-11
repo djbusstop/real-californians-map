@@ -404,3 +404,33 @@ subcultures:
       central San Diego, downtown Sacramento, plus the working-class non-
       major cities (Stockton, Modesto, Bakersfield, Fresno, San Bernardino).
 
+  - id: black_californians_sanity
+    name: Black Californians (sanity test)
+    vibe: not editorial. exists to validate the pipeline against a known demographic total.
+    # Single hard gate on PUMS RAC1P = 2 (Black or African American alone).
+    # No soft conditions, default threshold. Expected to produce a weighted
+    # member count near the ACS-published Black-alone total for California
+    # (~2.2-2.3M as of 2023 5-Year). Tract-level allocation after MOE-
+    # weighted raking should closely track B02001_003E (Black alone) tract
+    # counts because the regression has a single non-population predictor
+    # that IS the cohort. If outputs diverge substantially from the ACS
+    # published totals, something is wrong upstream in PUMS scoring,
+    # FH+EBLUP, or raking. This cohort is editorially nothing; it is
+    # validation infrastructure that lives inside the data pipeline.
+    tract_marginals:
+      - B02001_003E # Black or African American alone (tract-level race count)
+    vector:
+      - { field: RAC1P, op: eq, value: 2, weight: 1, required: true }
+    proxy_gap: |
+      Sanity-test cohort with a single hard gate (RAC1P = 2) and no soft
+      conditions. The cohort definition IS the ACS Black-alone race
+      category at the PUMS person level. Validates the full pipeline
+      (PUMS scoring + PWGTP aggregation + SDR variance + FH+EBLUP +
+      MOE-weighted raking) against an external benchmark for which the
+      ACS publishes a known total. Race is normally avoided as a gate
+      under the project's modeling constraints (see METHODOLOGY.md
+      "Modeling constraints"); this is the explicit documented exception
+      for a validation-only cohort. If the project ever produces a
+      user-facing visualisation, this cohort should be excluded from the
+      rendering and used only as a backend diagnostic.
+
