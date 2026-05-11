@@ -190,7 +190,7 @@ export default function Sidebar({
           );
         })}
       </div>
-
+      {/**
       <div
         style={{
           marginTop: 24,
@@ -226,6 +226,7 @@ export default function Sidebar({
           View on GitHub
         </a>
       </div>
+      */}
     </aside>
   );
 }
