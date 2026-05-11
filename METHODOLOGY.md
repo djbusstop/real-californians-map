@@ -285,6 +285,20 @@ Each pattern is a different way of being operationalized correctly. The numerica
 
 This is consistent with the project's epistemic posture (see "Project framing" above): the diagnostics test a hypothesis about how the archetype meets the data. The hypothesis can succeed or fail in different ways depending on the archetype's underlying geographic shape, and a failed test is itself a finding about the archetype, not only about the model.
 
+#### Calibration as finding: the patterns are derived, not declared
+
+The patterns described above (broadly distributed, demographically anchored, historically clustered) are findings from the existing cohort library, not categories declared in advance and then matched to cohorts. This is the project's **calibration-as-finding paradigm**, and it has consequences beyond the published map.
+
+When the project exposes a user-facing chatbot for authoring new cohorts (see `docs/cohort_api_spec.md`), the chatbot's interpretive vocabulary is anchored against the statistical signatures of the existing library cohorts. The named patterns serve as illustrative anchors for qualitative comparison ("this cohort's concentration_index is similar to bilingual_baddie") rather than as classification boundaries with magic-number thresholds. The cohort library is therefore doing double duty: it is both the project's substantive thesis about California's cultural geography and the empirical reference set the chatbot uses to interpret new user-defined cohorts.
+
+Three implications:
+
+1. **The currently-named patterns are not a closed set.** As new editorial cohorts are authored, the library may reveal additional patterns or refine the boundaries between existing ones. The pipeline does not assume the count is three; the API contract does not return a `cohort_type` enum.
+
+2. **No cohort exists solely to populate a pattern slot.** Every cohort in the library is a positioned editorial contribution per the autoethnographic vantage articulated in the paper. The calibration value of a cohort is a side effect of authentic authorship, never the reason for it.
+
+3. **Retrospective analysis of the library is itself a methodological practice.** When the library reaches sufficient size (roughly a dozen authentically authored cohorts), an audit of the actual statistical signatures across patterns becomes possible and is worth surfacing as a methods supplement to Section 9 of the paper.
+
 #### Precision and what diagnostics can detect
 
 A practical observation worth naming: the same diagnostic value can carry different evidential weight at different signal-to-noise ratios, because residuals are a sum of measurement noise (sampling variance σ²_e) and unexplained structure. When σ²_e is large, residuals are dominated by noise and any underlying spatial pattern in the cohort's geography is *masked* — Moran's I picks up only the small fraction of residual variance that is genuinely structural. When σ²_e drops (e.g., by switching from 1-year to 5-year ACS PUMS, or by including more replicate-weighted records in the SDR variance estimate), the noise floor falls and previously-masked spatial structure becomes measurable.
