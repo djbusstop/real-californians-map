@@ -63,6 +63,76 @@ a {
   border-radius: 2px;
 }
 
+/* CohortBuilder modal sliders. Two pieces:
+   - `.builder-slider`: base appearance reset, transparent track, dark
+     thumb. Used on its own for the single-handle education slider.
+   - `.builder-slider-stacked`: additive class for the two stacked
+     <input type="range"> elements that make up a dual-handle range
+     slider. Without this, the second input (rendered on top) absorbs
+     every track click and the low handle becomes unreachable. The
+     fix is `pointer-events: none` on the input itself, paired with
+     `pointer-events: auto` on the thumb pseudo-elements so each
+     thumb still captures its own drag.
+   The visual track is a separate `<div class="builder-slider-track">`
+   the inputs sit on top of, so both single and dual-handle sliders
+   share one rendering path. */
+.builder-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 14px;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  outline: none;
+}
+.builder-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #1a1f2e;
+  border: 2px solid white;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+  pointer-events: auto;
+}
+.builder-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #1a1f2e;
+  border: 2px solid white;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+  pointer-events: auto;
+}
+.builder-slider::-webkit-slider-runnable-track {
+  background: transparent;
+  border: none;
+  height: 14px;
+}
+.builder-slider::-moz-range-track {
+  background: transparent;
+  border: none;
+  height: 14px;
+}
+.builder-slider-stacked {
+  pointer-events: none;
+}
+.builder-slider-track {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 4px;
+  margin-top: -2px;
+  background: #d1d5db;
+  border-radius: 2px;
+  pointer-events: none;
+}
+
 /* On narrow viewports, hide the dot count / subculture count / 1 dot ≈ 20
    people text and the leading separator dot, leaving just the slider in
    the bottom-left card. Also hide the cohort legend on mobile — the

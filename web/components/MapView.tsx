@@ -3,8 +3,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, { Map as MlMap } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { Cohort } from "@/app/page";
+import type { Cohort } from "@/lib/types";
 import { buildDotLayer } from "@/utils/dotgen";
+import { AUTHORED_COHORT_COLOR } from "@/lib/constants";
+import CohortBuilder from "./CohortBuilder";
 
 interface Props {
   cohorts: Cohort[];
@@ -87,6 +89,61 @@ export default function MapView({ cohorts }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MlMap | null>(null);
   const beforeIdRef = useRef<string | undefined>(undefined);
+  // Form-authored cohort (at most one at a time). Cleared via the
+  // builder modal's delete button. The builder modal manages its own
+  // loading state while POSTing to /score, so no separate "scoring"
+  // flag at the MapView level is needed.
+  const [authoredCohort, setAuthoredCohort] = useState<Cohort | null>(null);
+
+  // Combined cohort set: library entries plus the (at most one)
+  // form-authored cohort. The legend always renders this complete
+  // set so the user can toggle visibility of any cohort.
+  const allCohorts = useMemo<Cohort[]>(
+    () => (authoredCohort ? [...cohorts, authoredCohort] : cohorts),
+    [cohorts, authoredCohort],
+  );
+
+  // Per-cohort selection toggled by clicking legend rows. Default
+  // state: every library cohort selected (= visible). Ephemeral —
+  // not persisted across reloads. Stale ids (e.g., from a previous
+  // authored cohort that was deleted) are harmless: they don't
+  // match any current cohort.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(
+    () => new Set(cohorts.map((c) => c.id)),
+  );
+
+  const toggleCohort = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  // Cohorts that actually paint on the map: those currently selected.
+  // All downstream map computations (mergedScores, dots, color
+  // expression, info bar count) use this filtered set; only the
+  // legend itself reads from allCohorts.
+  const visibleCohorts = useMemo<Cohort[]>(
+    () => allCohorts.filter((c) => selectedIds.has(c.id)),
+    [allCohorts, selectedIds],
+  );
+
+  // Saving a cohort focuses the map on it: the new cohort becomes
+  // the only selected one. Deleting it restores the full library
+  // selection so the map is never left empty after a delete. Users
+  // can still re-toggle individual library cohorts back on after a
+  // save by clicking their legend rows.
+  const onCohortFromBuilder = (c: Omit<Cohort, "color"> | null) => {
+    if (c === null) {
+      setAuthoredCohort(null);
+      setSelectedIds(new Set(cohorts.map((lc) => lc.id)));
+      return;
+    }
+    setAuthoredCohort({ ...c, color: AUTHORED_COHORT_COLOR });
+    setSelectedIds(new Set([c.id]));
+  };
   // Flips true once the basemap has loaded and the dots source/layer
   // are installed. The data-sync effect keys off this so it doesn't try
   // to setData on a source that does not exist yet, and so it doesn't
@@ -111,14 +168,14 @@ export default function MapView({ cohorts }: Props) {
   // tract-by-tract union.
   const mergedScores = useMemo<Scores>(() => {
     const out: Scores = {};
-    for (const c of cohorts) {
+    for (const c of visibleCohorts) {
       for (const [tract, scoreObj] of Object.entries(c.tract_scores)) {
         if (!out[tract]) out[tract] = {};
         Object.assign(out[tract], scoreObj);
       }
     }
     return out;
-  }, [cohorts]);
+  }, [visibleCohorts]);
 
   // Fetch tracts geometry once on mount.
   useEffect(() => {
@@ -148,7 +205,7 @@ export default function MapView({ cohorts }: Props) {
       features: [],
     };
     if (!geojson) return all;
-    for (const c of cohorts) {
+    for (const c of visibleCohorts) {
       const fc = buildDotLayer(
         geojson,
         mergedScores,
@@ -166,7 +223,7 @@ export default function MapView({ cohorts }: Props) {
       [all.features[i], all.features[j]] = [all.features[j], all.features[i]];
     }
     return all;
-  }, [geojson, mergedScores, cohorts]);
+  }, [geojson, mergedScores, visibleCohorts]);
 
   // Initial map setup. Runs once on mount.
   useEffect(() => {
@@ -225,7 +282,7 @@ export default function MapView({ cohorts }: Props) {
             // The initial color expression is built from the cohorts
             // prop at first render; the cohorts-change effect below
             // updates it if the prop ever changes.
-            "circle-color": buildColorMatchExpression(cohorts),
+            "circle-color": buildColorMatchExpression(visibleCohorts),
             "circle-opacity": [
               "interpolate",
               ["linear"],
@@ -281,10 +338,10 @@ export default function MapView({ cohorts }: Props) {
     );
   }, [dotScale, mapReady]);
 
-  // Rebuild the color match expression if the cohorts prop changes
-  // (new user-created cohort added, library updated, etc.). The map
-  // is already initialized so we just setPaintProperty rather than
-  // rebuilding the layer.
+  // Rebuild the color match expression if the cohort set changes
+  // (library updated or chat-authored cohort arrived / cleared). The
+  // map is already initialized so we just setPaintProperty rather
+  // than rebuilding the layer.
   useEffect(() => {
     if (!mapReady) return;
     const map = mapRef.current;
@@ -292,9 +349,9 @@ export default function MapView({ cohorts }: Props) {
     map.setPaintProperty(
       "dots-circle",
       "circle-color",
-      buildColorMatchExpression(cohorts),
+      buildColorMatchExpression(visibleCohorts),
     );
-  }, [cohorts, mapReady]);
+  }, [visibleCohorts, mapReady]);
 
   return (
     <div style={{ width: "100%", height: "100%", position: "relative" }}>
@@ -324,7 +381,8 @@ export default function MapView({ cohorts }: Props) {
       >
         <span className="map-info-text">
           {dots.features.length.toLocaleString()} dots ·{" "}
-          {cohorts.length} cohort{cohorts.length === 1 ? "" : "s"} · 1 dot ≈{" "}
+          {visibleCohorts.length} cohort
+          {visibleCohorts.length === 1 ? "" : "s"} · 1 dot ≈{" "}
           {DOTS_PER_UNIT.toLocaleString()} people
         </span>
         <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -381,52 +439,79 @@ export default function MapView({ cohorts }: Props) {
           tracts_ca.geojson failed to load: {geojsonError}
         </div>
       )}
-      {/* Top-left cohort legend. Desktop-only via the .cohort-legend
-          class hide in globals.css. Each row is a color dot + cohort
-          name; supports both the library cohorts and user-created ones
-          since the source is the same `cohorts` prop. */}
+      {/* Top-left stack: legend on top, chat below. Both desktop-only
+          via the .cohort-legend class hide in globals.css. */}
       <div
         className="cohort-legend"
         style={{
           position: "absolute",
           top: 12,
           left: 12,
-          background: "rgba(255,255,255,0.92)",
-          border: "1px solid rgba(0,0,0,0.08)",
-          borderRadius: 6,
-          padding: "8px 12px",
-          fontSize: 12,
-          color: "#1a1f2e",
-          fontFamily:
-            "-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif",
-          boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
-          minWidth: 140,
-          maxWidth: 240,
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
         }}
       >
-        {cohorts.map((c) => (
-          <div
-            key={c.id}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "2px 0",
-              lineHeight: 1.3,
-            }}
-          >
-            <span
-              style={{
-                width: 10,
-                height: 10,
-                borderRadius: 5,
-                background: c.color,
-                flexShrink: 0,
-              }}
-            />
-            <span>{c.name}</span>
-          </div>
-        ))}
+        <div
+          style={{
+            // Match the bottom-left info bar and cohort builder button:
+            // monospace 11px, light-gray translucent background, thin
+            // border, no shadow.
+            background: "rgba(255,255,255,0.85)",
+            border: "1px solid rgba(0,0,0,0.08)",
+            borderRadius: 4,
+            padding: "4px 8px",
+            fontSize: 11,
+            color: "#1a1f2e",
+            fontFamily: "ui-monospace, monospace",
+            minWidth: 140,
+            maxWidth: 240,
+          }}
+        >
+          {allCohorts.map((c) => {
+            const selected = selectedIds.has(c.id);
+            return (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => toggleCohort(c.id)}
+                title={selected ? "hide cohort" : "show cohort"}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "2px 0",
+                  lineHeight: 1.3,
+                  background: "transparent",
+                  border: "none",
+                  textAlign: "left",
+                  cursor: "pointer",
+                  font: "inherit",
+                  color: selected ? "#1a1f2e" : "#9ca3af",
+                  width: "100%",
+                }}
+              >
+                <span
+                  style={{
+                    width: 10,
+                    height: 10,
+                    borderRadius: 5,
+                    background: selected ? c.color : "transparent",
+                    border: selected ? "none" : `2px solid ${c.color}`,
+                    flexShrink: 0,
+                    boxSizing: "border-box",
+                    opacity: selected ? 1 : 0.55,
+                  }}
+                />
+                <span style={{ opacity: selected ? 1 : 0.7 }}>{c.name}</span>
+              </button>
+            );
+          })}
+        </div>
+        <CohortBuilder
+          onCohort={onCohortFromBuilder}
+          hasCohort={authoredCohort !== null}
+        />
       </div>
     </div>
   );
