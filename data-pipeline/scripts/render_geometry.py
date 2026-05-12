@@ -34,7 +34,7 @@ _DATA_PIPELINE_DIR = Path(__file__).resolve().parent.parent
 if str(_DATA_PIPELINE_DIR) not in sys.path:
     sys.path.insert(0, str(_DATA_PIPELINE_DIR))
 
-from pipeline import fetch_pumas_geojson, fetch_tracts_geojson  # noqa: E402
+from data_prep import fetch_pumas_geojson, fetch_tracts_geojson  # noqa: E402
 
 
 def main() -> int:

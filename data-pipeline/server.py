@@ -37,7 +37,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from pydantic_core import PydanticCustomError
 
-from pipeline import HOUSING_VARS, PERSON_VARS
+from data_prep import HOUSING_VARS, PERSON_VARS
 from service import (
     ServerState,
     canonical_cohort_hash,
@@ -55,7 +55,7 @@ from service import (
 # tract_scores. Roughly 50-200KB per file; ~100MB at 1000 unique cohorts.
 COHORT_CACHE_DIR = Path(__file__).parent / "cohort_cache"
 
-# Known PUMS fields. The set is sourced from pipeline.PERSON_VARS +
+# Known PUMS fields. The set is sourced from data_prep.PERSON_VARS +
 # HOUSING_VARS plus derived SAME_SEX. Used for early validation so we
 # can return a friendly error before running the pipeline.
 KNOWN_FIELDS: set[str] = (

@@ -23,25 +23,32 @@ from typing import Any
 
 import pandas as pd
 
-# Re-use the existing pipeline functions verbatim. Nothing in pipeline.py
-# needs to change for the service to work; everything below is a thin
-# wrapper that calls into pipeline.py with the right arguments.
-from pipeline import (
+# Data-prep (PUMS fetch, parquet build, geometry, crosswalk) lives in
+# pipeline.py. Per-record scoring + PUMA aggregation lives in
+# scoring.py. The statistical small-area-estimation machinery
+# (marginal fetching, ridge+NNLS, FH+EBLUP, Conley, bootstrap, Moran,
+# raking) lives in sae.py. service.py is a thin orchestrator that
+# wires them together per /score request.
+from data_prep import (
     CACHE,
     DEFAULT_MEMBERSHIP_THRESHOLD,
-    TractMarginal,
-    _process_one_cohort_for_tracts,
-    aggregate_to_puma,
-    aggregate_to_puma_variance,
     build_puma_centroids,
     build_puma_queen_neighbors,
-    compute_membership,
-    fetch_acs_tract_marginal,
     fetch_pums,
     fetch_pumas_geojson,
     fetch_tract_puma_crosswalk,
+)
+from scoring import (
+    aggregate_to_puma,
+    aggregate_to_puma_variance,
+    compute_membership,
     parse_marginal_specs,
     score_subculture,
+)
+from sae import (
+    TractMarginal,
+    _process_one_cohort_for_tracts,
+    fetch_acs_tract_marginal,
 )
 
 
