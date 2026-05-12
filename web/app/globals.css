@@ -65,13 +65,17 @@ a {
 
 /* On narrow viewports, hide the dot count / subculture count / 1 dot ≈ 20
    people text and the leading separator dot, leaving just the slider in
-   the bottom-left card. The mobile sidebar legend already shows the cohort
-   set; the count text isn't worth the screen space on mobile. */
+   the bottom-left card. Also hide the cohort legend on mobile — the
+   screen is too narrow to spare 140px+ for a list of names, and the
+   legend will be reincarnated as part of the chat panel anyway. */
 @media (max-width: 768px) {
   .map-info-text {
     display: none;
   }
   .dot-size-separator {
+    display: none;
+  }
+  .cohort-legend {
     display: none;
   }
 }

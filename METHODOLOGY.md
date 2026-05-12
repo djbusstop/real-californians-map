@@ -44,7 +44,7 @@ Each subculture is defined as a configuration record with four components:
 
 4. A **proxy-gap note** documented in the configuration, recording the categorical attributes that the trait vector cannot directly capture (e.g. gender identity, political affiliation, religious affiliation, consumption preferences). These notes are part of the published configuration for methodological transparency.
 
-The full configuration is in `data-pipeline/subcultures.yaml`.
+The full configuration is in `data-pipeline/web/lib/library.json`.
 
 ### Cohorts in this implementation
 
@@ -313,7 +313,7 @@ The pipeline includes two guards that surface data-quality issues at the source 
 
 **Tract-marginal all-zeros detection.** When `fetch_acs_tract_marginal` retrieves an ACS Detailed Tables variable and the response is 100% zeros across all California tracts, the pipeline prints a warning and refuses to cache the result. The Census Bureau suppresses some detailed tables (e.g., `B16001` detailed-language and `B11009` same-sex partner-household) at tract level for disclosure reasons. Without the guard, an all-zeros response would be cached indefinitely and silently drive the corresponding cohort's tract distribution to a uniform-within-PUMA fallback. With the guard, the configurer is informed that a chosen marginal does not publish at tract level and should be substituted (typically with a collapsed published table such as `C16001`).
 
-**Missing-field detection in trait vectors.** When a condition in `subcultures.yaml` references a PUMS field that is not present in the loaded DataFrame (e.g., a typo such as `AGEPP` for `AGEP`, or a variable that was removed from `PERSON_VARS`), the pipeline prints a one-time warning per field and continues with that condition scoring zero for every record. Without the guard, the cohort would silently lose that condition's contribution and the configurer would have no signal that anything was wrong.
+**Missing-field detection in trait vectors.** When a condition in `web/lib/library.json` references a PUMS field that is not present in the loaded DataFrame (e.g., a typo such as `AGEPP` for `AGEP`, or a variable that was removed from `PERSON_VARS`), the pipeline prints a one-time warning per field and continues with that condition scoring zero for every record. Without the guard, the cohort would silently lose that condition's contribution and the configurer would have no signal that anything was wrong.
 
 ### Numerical robustness
 
@@ -361,7 +361,7 @@ Dot counts are proportional to the underlying tract-level score within a single 
 
 The dot placement on the map carries uncertainty from three stacked decisions, in roughly decreasing order of magnitude:
 
-1. **The trait vector that defines each cohort.** This is the largest source of uncertainty and is irreducibly subjective. No statistical machinery can determine "what counts as a queer leftist" from data alone; the trait vector is an editorial operationalization of a cultural archetype. The per-cohort proxy-gap notes in `subcultures.yaml` document what the trait vector cannot capture.
+1. **The trait vector that defines each cohort.** This is the largest source of uncertainty and is irreducibly subjective. No statistical machinery can determine "what counts as a queer leftist" from data alone; the trait vector is an editorial operationalization of a cultural archetype. The per-cohort proxy-gap notes in `web/lib/library.json` document what the trait vector cannot capture.
 
 2. **The choice of tract-level marginal variables.** Marginals are selected manually based on judgment about correlation with the cohort's expected geography, then constrained by what the Census Bureau publishes at tract level. Some natural choices (Table B16001 detailed-language, Table B11009 same-sex partner) are suppressed at the tract level and we substitute alternatives. Sensitivity to this selection is not formally characterized.
 
@@ -405,7 +405,7 @@ A reviewer's leverage on improving the map's accuracy is therefore highest at (1
 
 The full pipeline — configuration, scoring code, distribution code, and visualization code — is open. The relevant files are:
 
-- `data-pipeline/subcultures.yaml` — every condition, weight, gate, and marginal for every cohort.
+- `web/lib/library.json` — every condition, weight, gate, and marginal for every cohort.
 - `data-pipeline/pipeline.py` — fetches PUMS, scores records, distributes to tracts, writes outputs.
 - `web/components/MapView.tsx` — rendering.
 

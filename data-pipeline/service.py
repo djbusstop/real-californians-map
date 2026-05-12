@@ -294,26 +294,25 @@ def _format_marginal_reliability(reliability_list: list[dict]) -> str:
 def score_one_cohort(state: ServerState, cohort_def: dict) -> dict:
     """Run the full pipeline for one cohort and return a response dict.
 
-    The response shape matches ``docs/cohort_api_spec.md`` §3.1, minus the
-    ``tract_scores_url`` and ``cache_status`` fields which are added by
-    the HTTP layer (server.py) since they depend on filesystem state.
+    Response shape (matches ``docs/cohort_api_spec.md`` §3.1):
 
-    Returns
-    -------
-    dict
-        Keys:
-        - ``cohort_id``: content hash (12 hex chars)
-        - ``tract_scores``: ``{tract_geoid: {cohort_id: score}}`` (the
-          object that the HTTP layer will write to disk)
-        - ``stats``: raw statistical quantities (see spec §3.3)
-        - ``elapsed_ms``: scoring wall-clock time
+        {
+          "id":           "<12-hex content hash>",
+          "name":         "<cohort display name>",
+          "tract_scores": {"<tract_geoid>": {"<id>": <score>}, ...},
+          "stats":        {<raw statistical quantities — see spec §3.3>}
+        }
+
+    The hash-as-id ensures structurally identical cohort definitions
+    collapse to a single cache entry regardless of cosmetic differences
+    (name, vibe, vector entry order). Display name is reflected back as
+    a convenience for callers that want to surface it without retaining
+    the original request.
     """
-    t0 = time.time()
-
-    # The cohort_id is the content hash. We override whatever id the
-    # caller may have set, so that two definitions with cosmetically
-    # different ids but identical computational inputs end up with the
-    # same hash (and the same cache file downstream).
+    # The id is the content hash. We override whatever id the caller
+    # may have set, so two definitions with cosmetically different ids
+    # but identical computational inputs end up with the same hash and
+    # the same cache file downstream.
     sub_id = canonical_cohort_hash(cohort_def)
     cohort_def_with_id = {**cohort_def, "id": sub_id}
     threshold = float(
@@ -430,12 +429,11 @@ def score_one_cohort(state: ServerState, cohort_def: dict) -> dict:
         if v is not None and v > 0
     }
 
-    elapsed_ms = int((time.time() - t0) * 1000)
     return {
-        "cohort_id": sub_id,
+        "id": sub_id,
+        "name": cohort_def.get("name", sub_id),
         "tract_scores": tract_scores,
         "stats": stats,
-        "elapsed_ms": elapsed_ms,
     }
 
 

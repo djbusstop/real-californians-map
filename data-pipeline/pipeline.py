@@ -3,7 +3,7 @@ California Subculture Map: data pipeline.
 
 Pulls ACS PUMS records for California (2020-2024 5-year vintage) via the Census API,
 joins person and household records, scores each record against the subculture library
-defined in subcultures.yaml, aggregates to PUMA, and writes JSON the Next.js app reads.
+defined in web/lib/library.json, aggregates to PUMA, and writes JSON the Next.js app reads.
 
 Run:
     pip install -r requirements.txt
@@ -42,14 +42,20 @@ import joblib
 import numpy as np
 import pandas as pd
 import requests
-import yaml
 from scipy.optimize import nnls
 from tqdm import tqdm
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
 CACHE = ROOT / "cache"
-CONFIG = ROOT / "subcultures.yaml"
+# Cohort library lives in the web app's lib/ directory. This is a
+# deliberate monorepo choice: the frontend ships the canonical list of
+# cohorts (id, name, vibe, color, threshold, tract_marginals, vector,
+# proxy_gap), the backend reads the same file at startup for prewarm
+# and batch runs. There is no separate backend copy that can drift.
+# The `color` field is presentation-only and ignored by every backend
+# code path; the canonical_cohort_hash function explicitly excludes it.
+CONFIG = ROOT.parent / "web" / "lib" / "library.json"
 
 API_KEY = os.environ.get("CENSUS_API_KEY")  # optional
 
@@ -84,7 +90,7 @@ VIF_INFINITY_THRESHOLD_R2: float = 1 - 1e-9
 # Default membership threshold τ. A PUMS record counts as a cohort member iff
 # every `required: true` condition in the trait vector passes AND the soft
 # similarity score is at or above this threshold. Override per cohort by
-# adding `threshold:` to the cohort entry in subcultures.yaml. See
+# adding `threshold:` to the cohort entry in web/lib/library.json. See
 # METHODOLOGY.md "Scoring" for rationale.
 DEFAULT_MEMBERSHIP_THRESHOLD: float = 0.5
 
@@ -124,7 +130,7 @@ ACS_MOE_Z90: float = 1.645
 
 
 # ----------------------------------------------------------------------------
-# Variable lists for the API pull. Keep these aligned with subcultures.yaml.
+# Variable lists for the API pull. Keep these aligned with web/lib/library.json.
 # Person-record variables (acs5/pums "person" file).
 PERSON_VARS = [
     "PUMA",       # 5-digit PUMA code (2020 vintage uses PUMA20 in some places; API field is PUMA)
@@ -1862,7 +1868,7 @@ def _eval_condition(df: pd.DataFrame, cond: dict) -> pd.Series:
 
     If the named field is not in the DataFrame, returns all zeros (so the
     cohort still scores) but prints a warning once per unique missing field.
-    Common cause: a typo in subcultures.yaml (e.g., AGEPP for AGEP).
+    Common cause: a typo in web/lib/library.json (e.g., AGEPP for AGEP).
     """
     if cond.get("computed") == "modal":
         # Special-cased upstream.
@@ -1873,7 +1879,7 @@ def _eval_condition(df: pd.DataFrame, cond: dict) -> pd.Series:
             print(
                 f"[warn] field '{field}' not in PUMS DataFrame columns. "
                 "All conditions referencing this field will score 0. "
-                "Check spelling in subcultures.yaml against PERSON_VARS / HOUSING_VARS."
+                "Check spelling in web/lib/library.json against PERSON_VARS / HOUSING_VARS."
             )
             _UNKNOWN_FIELDS_WARNED.add(field)
         return pd.Series(0.0, index=df.index)
@@ -2047,12 +2053,12 @@ def main() -> None:
     DATA.mkdir(exist_ok=True)
     CACHE.mkdir(exist_ok=True)
 
-    config = yaml.safe_load(CONFIG.read_text())
-    subcultures = config["subcultures"]
-    settings = config.get("settings", {}) or {}
-    default_threshold = float(
-        settings.get("default_threshold", DEFAULT_MEMBERSHIP_THRESHOLD)
-    )
+    # The library is a flat JSON list of cohort definitions; no settings
+    # block (the pipeline-wide settings that used to live there were
+    # decorative or constants by this point — default_threshold is the
+    # only one that actually mattered and it lives in DEFAULT_MEMBERSHIP_THRESHOLD).
+    subcultures = json.loads(CONFIG.read_text())
+    default_threshold = DEFAULT_MEMBERSHIP_THRESHOLD
     print(f"[config] loaded {len(subcultures)} subcultures (default τ={default_threshold:.2f})")
 
     # Boundaries first — needed to discover PUMA codes before chunked PUMS pulls.

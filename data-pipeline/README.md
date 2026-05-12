@@ -1,6 +1,6 @@
 # Real Californians: data pipeline
 
-Fetches ACS PUMS for California, scores each record against the cohorts defined in `subcultures.yaml`, distributes scores to census tracts via Fay-Herriot small-area estimation, and outputs JSON the Next.js app reads.
+Fetches ACS PUMS for California, scores each record against the cohorts defined in `../web/lib/library.json`, distributes scores to census tracts via Fay-Herriot small-area estimation, and outputs JSON the Next.js app reads.
 
 For the methodology (cohort definitions, scoring, small-area model, diagnostics, limitations), see [METHODOLOGY.md](../METHODOLOGY.md) at the project root.
 
@@ -31,7 +31,7 @@ In `./data/`:
 
 - `pums_ca.parquet` — merged person + household records with the 80 replicate weights. Reusable for any subsequent analysis.
 - `tracts_ca.geojson` — TIGER census tract boundaries for California.
-- `tract_scores.json` — `{ tract_geoid: { cohort_id: weighted_member_count } }`. The Next.js app reads this. Under the threshold-based membership rule (see `subcultures.yaml` settings and METHODOLOGY.md), each value is the weighted count of cohort members allocated to that tract.
+- `tract_scores.json` — `{ tract_geoid: { cohort_id: weighted_member_count } }`. The Next.js app reads this. Under the threshold-based membership rule (see `../web/lib/library.json` settings and METHODOLOGY.md), each value is the weighted count of cohort members allocated to that tract.
 - `model_summaries.json` — per-cohort Fay-Herriot diagnostics: σ²_u, σ²_e, EBLUP shrinkage γ, ridge λ, LOOCV R², bootstrap CI half-widths, Conley HAC SEs, Moran's I on residuals, VIFs. Also carries scoring-stage secondary diagnostics: threshold τ, weighted gate-pass count, weighted soft total, mean fit per member.
 - `puma_scores.json` — intermediate PUMA-level cohort member counts prior to tract distribution.
 
@@ -39,7 +39,7 @@ In `./data/`:
 
 ## Editing cohorts
 
-`subcultures.yaml` is the source of truth. Each cohort has:
+`../web/lib/library.json` is the source of truth. Each cohort has:
 
 - `id`, `name`, `vibe` — display metadata
 - `vector` — list of conditions, each with `field`, `op`, `value`, `weight`, optional `required: true`

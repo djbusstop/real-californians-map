@@ -44,12 +44,13 @@ calibration references from the existing cohort library (section 4).
 ### 1.1 What the endpoint does
 
 `POST /score` takes a cohort definition (the same structural shape as an
-entry in `subcultures.yaml`) and returns:
+entry in `web/lib/library.json`) and returns:
 
-1. A `cohort_id` (content-hash, used by the frontend as a layer key).
-2. A URL to a tract-level scores JSON file the frontend fetches and
-   merges into the map's `scores` state.
-3. A `stats` object containing raw statistical quantities computed during
+1. An `id` (content-hash, used by the frontend as a layer key).
+2. The cohort's `name` (echoed from the request for caller convenience).
+3. `tract_scores` inline as a nested `{tract_geoid: {id: score}}` object
+   the frontend merges into the map's `scores` state.
+4. A `stats` object containing raw statistical quantities computed during
    the pipeline run.
 
 ### 1.2 Latency target
@@ -66,8 +67,8 @@ requests hit cache and return in under 200 ms.
   the map renders it.
 - **Backend (FastAPI)**: validates the request, computes the content
   hash, checks the marginal cache, runs the pipeline for this one
-  cohort, writes `tract_scores_<hash>.json` to disk, returns the
-  response.
+  cohort, writes `response_<hash>.json` (the full response, including
+  inline tract_scores) to disk, returns the response.
 - **LLM (Anthropic API, called from backend)**: handles the conversation
   with the user. Drafts the cohort YAML. Asks the user early on which
   cohort pattern (section 4) they imagine the group to exhibit, drawn
@@ -159,8 +160,8 @@ Each entry in `vector` must have:
 
 ### 2.5 Hash inputs
 
-The `cohort_id` is derived as the first 12 hex characters of the SHA-256
-hash of a canonical JSON serialization of:
+The `id` is derived as the first 12 hex characters of the SHA-256 hash
+of a canonical JSON serialization of:
 
 ```
 {
@@ -172,9 +173,9 @@ hash of a canonical JSON serialization of:
 
 `name`, `vibe`, and `proxy_gap` are not part of the hash. Two requests
 with identical computational inputs but different display text return
-the same `cohort_id` and share the cached `tract_scores_<hash>.json`
-file. The backend stores the most recent `name` and `vibe` it has seen
-for a hash, but this metadata is descriptive only.
+the same `id` and share the cached `response_<hash>.json` file. The
+response echoes back the most recent `name` it has seen for a hash, but
+this metadata is descriptive only.
 
 Normalization rules for hashing:
 
@@ -195,8 +196,12 @@ different cache keys.
 
 ```json
 {
-  "cohort_id": "a1b2c3d4e5f6",
-  "tract_scores_url": "/data/tract_scores_a1b2c3d4e5f6.json",
+  "id": "a1b2c3d4e5f6",
+  "name": "Crocs people",
+  "tract_scores": {
+    "06037103100": { "a1b2c3d4e5f6": 1247.3 },
+    "06037103200": { "a1b2c3d4e5f6": 982.1 }
+  },
   "stats": {
     "weighted_member_count": 287400,
     "weighted_gate_pass": 312000,
@@ -215,11 +220,15 @@ different cache keys.
     "feature_names": ["population", "B19001_009E", "B25024_002E"],
     "feature_coefs": [0.0, 286.3, 41.2],
     "marginal_reliability_summary": "B19001_009E: 89% caution, 8% unreliable; B25024_002E: 36% caution, 5% unreliable"
-  },
-  "cache_status": "miss",
-  "elapsed_ms": 38420
+  }
 }
 ```
+
+The response is deliberately minimal: four top-level keys. `cache_status`
+and `elapsed_ms` are absent on purpose — the backend logs both for
+observability but doesn't surface them in the response body. Frontends
+that care about cache behavior can infer it from response time at the
+HTTP layer.
 
 ### 3.2 Field semantics
 
@@ -227,11 +236,10 @@ different cache keys.
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `cohort_id` | string | Content hash, 12 hex characters. Use as the layer key on the frontend. |
-| `tract_scores_url` | string | Path to the cohort's tract-level scores JSON. Fetch it and merge into the map's scores state. |
+| `id` | string | Content hash, 12 hex characters. Use as the layer key on the frontend. Identical computational inputs always produce the same id. |
+| `name` | string | Display name, echoed from the request. The server stores the most recent name seen for a given id but the id itself does not depend on it. |
+| `tract_scores` | object | Nested `{tract_geoid: {id: score}}`. Same shape the batch pipeline emits so the frontend's existing multi-cohort merge handles it verbatim. Tracts with zero or undefined cohort presence are omitted. |
 | `stats` | object | Raw statistical quantities from the pipeline run. See 3.3. |
-| `cache_status` | enum | `hit` if returned from cache (no pipeline run), `miss` if freshly computed. |
-| `elapsed_ms` | int | Wall-clock time from request received to response sent. For monitoring. |
 
 ### 3.3 stats object
 
@@ -262,12 +270,9 @@ interpretation but never quoted (R², Moran's I, etc.).
 | `feature_coefs` | array of floats | Back-transformed coefficients (z-score scale undone). | |
 | `marginal_reliability_summary` | string | Human-readable summary of tract-level CV diagnostics for the chosen marginals (caution band ≥ 12%, unreliable band ≥ 40%). | Census Bureau 2020 ch. 7; Spielman and Singleton 2015. |
 
-### 3.4 Tract scores JSON file (`tract_scores_<hash>.json`)
+### 3.4 tract_scores shape
 
-The file at `tract_scores_url` has the same nested shape as the existing
-batch pipeline's output, with a single cohort inside. This means the
-frontend merge logic that already handles multi-cohort scores works
-unchanged.
+The `tract_scores` value in the response is a nested object:
 
 ```json
 {
@@ -278,23 +283,23 @@ unchanged.
 ```
 
 Outer keys are 11-character census tract GEOIDs. Inner objects have a
-single key: the cohort hash. Values are EBLUP estimates after
-MOE-weighted raking to tract level. Numeric type is float.
+single key: the cohort id. Values are EBLUP estimates after MOE-weighted
+raking to tract level, rounded to one decimal place, float type.
 
-Tracts with zero or undefined cohort presence are omitted from the file
-(rather than included with a zero value) to keep the file small.
+Tracts with zero or undefined cohort presence are omitted (rather than
+included with a zero value) to keep the payload small.
 
-### 3.5 File lifecycle
+### 3.5 Cache file lifecycle
 
-`tract_scores_<hash>.json` files are written to disk on cohort creation
-and persist indefinitely. The content-hash key makes accidental
-duplication impossible. Future "gallery" features rely on this
-persistence.
+On a cache miss, the backend writes the full response (id, name,
+tract_scores, stats) to `cohort_cache/response_<hash>.json` so future
+identical requests can return without re-running the pipeline. Files
+persist indefinitely; the content-hash key makes accidental duplication
+impossible.
 
-A separate `cohorts_index.json` file maintained by the backend stores
-metadata for every cohort ever created: hash, name, vibe, stats
-summary, creation timestamp. This is the gallery index. Not part of
-the `POST /score` contract but worth noting here.
+A separate `cohorts_index.json` file may be maintained by the backend
+as a future gallery index, listing every cohort ever scored with its
+metadata. Not part of the `POST /score` contract but worth noting here.
 
 ---
 
@@ -701,9 +706,9 @@ an empty cohort has nothing to distribute).
 Three caches sit on the backend:
 
 1. **Cohort result cache** (disk). Key: content hash of cohort
-   definition. Value: the `tract_scores_<hash>.json` file plus a
-   sidecar metadata file with the response object. On cache hit, the
-   backend returns the sidecar verbatim with `cache_status: "hit"`. No
+   definition. Value: a single `response_<hash>.json` file holding the
+   full response (id, name, tract_scores, stats). On cache hit, the
+   backend reads the file and returns its contents verbatim. No
    pipeline work.
 
 2. **Marginal cache** (in-process dict, optionally backed by Redis or
@@ -715,13 +720,14 @@ Three caches sit on the backend:
 3. **PUMS parquet** (in-process pandas DataFrame). Loaded once at
    service startup. Never evicted while the process is alive.
 
-### 9.2 Cache hit response
+### 9.2 Cache hit behavior
 
-When a content hash matches an existing cohort, the backend returns
-the stored response with `cache_status: "hit"` and `elapsed_ms`
-reflecting only the cache lookup (typically under 50 ms). The
-`tract_scores_url` points at the existing file on disk; no rewrite
-happens.
+When a content hash matches an existing cohort, the backend reads the
+stored response file and returns its contents directly. Cache lookups
+typically complete in under 50 ms. The response body is byte-identical
+to the original miss response; clients cannot distinguish hit from
+miss by inspecting the payload (the backend logs hit/miss internally
+for observability).
 
 ### 9.3 Cache invalidation
 
@@ -736,7 +742,7 @@ vintage differs from the cached marginals.
 
 ### 9.4 Disk usage
 
-Each `tract_scores_<hash>.json` file is approximately 50-200 KB for a
+Each `response_<hash>.json` file is approximately 50-200 KB for a
 typical cohort. At 1000 unique cohorts, disk usage is roughly 100 MB.
 No practical concern.
 
@@ -811,15 +817,16 @@ Response (HTTP 422):
 ### 10.4 Cache hit
 
 A second POST with the same computational inputs (different `name` or
-`vibe` is allowed):
+`vibe` is allowed) returns the cached response verbatim. The body is
+byte-identical to the original miss response; only the HTTP-level
+timing reveals the hit.
 
 ```json
 {
-  "cohort_id": "a1b2c3d4e5f6",
-  "tract_scores_url": "/data/tract_scores_a1b2c3d4e5f6.json",
-  "stats": { /* same as the cached miss response */ },
-  "cache_status": "hit",
-  "elapsed_ms": 38
+  "id": "a1b2c3d4e5f6",
+  "name": "Crocs people",
+  "tract_scores": { /* same as the cached miss response */ },
+  "stats":        { /* same as the cached miss response */ }
 }
 ```
 
@@ -831,16 +838,17 @@ Deferred until the schema is in use.
 
 1. **Authentication.** None proposed for v1. If abuse appears, add a
    rate-limit per IP and a per-session API key.
-2. **Cohort editing.** Currently every edit creates a new cohort_id
-   (different hash). Should there be a notion of "this cohort is a
-   revision of that one" for the gallery? Probably yes, via a separate
-   `parent_id` field that does not affect the hash.
+2. **Cohort editing.** Currently every edit creates a new id (different
+   hash). Should there be a notion of "this cohort is a revision of
+   that one" for the gallery? Probably yes, via a separate `parent_id`
+   field that does not affect the hash.
 3. **User-supplied marginals.** The chatbot proposes tract marginals
    from a curated set; should the user be able to specify arbitrary
    ACS table codes? Probably yes, but with a soft warning when
    reliability is poor.
-4. **Sharing.** `tract_scores_<hash>.json` is publicly fetchable. Is
-   the underlying cohort definition also publicly readable via the
+4. **Sharing.** A cohort's full response is keyed by hash and could be
+   exposed at `GET /score/<hash>` for shareable links. Is the underlying
+   cohort definition also publicly readable via the
    gallery? Almost certainly yes for an artistic tool, but worth
    confirming.
 5. **Multi-cohort comparison.** Should `POST /score` support a batch

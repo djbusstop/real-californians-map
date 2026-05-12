@@ -11,6 +11,7 @@ or from data-pipeline/:
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -22,12 +23,10 @@ _DATA_PIPELINE_DIR = Path(__file__).resolve().parent.parent
 if str(_DATA_PIPELINE_DIR) not in sys.path:
     sys.path.insert(0, str(_DATA_PIPELINE_DIR))
 
-import yaml  # noqa: E402
-
 from service import ServerState, score_one_cohort  # noqa: E402
 
 
-SUBCULTURES_YAML = _DATA_PIPELINE_DIR / "subcultures.yaml"
+LIBRARY_JSON = _DATA_PIPELINE_DIR.parent / "web" / "lib" / "library.json"
 LATENCY_TARGET_S = 60.0
 TEST_COHORT_ID = "queer_leftist"
 
@@ -40,15 +39,13 @@ def main() -> int:
     print(f"ServerState load: {t_load:.1f}s", flush=True)
     print(flush=True)
 
-    config = yaml.safe_load(SUBCULTURES_YAML.read_text())
+    library = json.loads(LIBRARY_JSON.read_text())
     try:
-        test_cohort = next(
-            s for s in config["subcultures"] if s["id"] == TEST_COHORT_ID
-        )
+        test_cohort = next(s for s in library if s["id"] == TEST_COHORT_ID)
     except StopIteration:
         print(
-            f"ERROR: cohort {TEST_COHORT_ID!r} not in {SUBCULTURES_YAML}; "
-            f"either move to a branch that has it or change TEST_COHORT_ID.",
+            f"ERROR: cohort {TEST_COHORT_ID!r} not in {LIBRARY_JSON}; "
+            f"either change TEST_COHORT_ID or check the library file.",
             file=sys.stderr,
         )
         return 2
@@ -58,7 +55,8 @@ def main() -> int:
     result = score_one_cohort(state, test_cohort)
     t_cold = time.time() - t0
     print(f"TOTAL cold: {t_cold:.1f}s", flush=True)
-    print(f"cohort_id: {result['cohort_id']}", flush=True)
+    print(f"id: {result['id']}", flush=True)
+    print(f"name: {result['name']}", flush=True)
     print(
         f"weighted_member_count: {result['stats']['weighted_member_count']:,}",
         flush=True,
@@ -84,10 +82,7 @@ def main() -> int:
     result2 = score_one_cohort(state, test_cohort)
     t_warm = time.time() - t0
     print(f"TOTAL warm: {t_warm:.1f}s", flush=True)
-    print(
-        f"hash match: {result['cohort_id'] == result2['cohort_id']}",
-        flush=True,
-    )
+    print(f"hash match: {result['id'] == result2['id']}", flush=True)
     print(flush=True)
 
     print("=== Latency target ===", flush=True)

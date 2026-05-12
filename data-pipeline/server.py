@@ -10,10 +10,9 @@ is wrapped by ``service.score_one_cohort()``.
 
 Caching:
   - Cohort result cache (disk). Key: 12-hex content hash of the cohort
-    definition. Two files written per cohort: the tract_scores JSON
-    served at the URL the frontend fetches, and a response sidecar JSON
-    containing the full response so a cache hit can return without
-    re-running the pipeline.
+    definition. One file per cohort (``response_<hash>.json``) holds
+    the full response including inline tract_scores. Cache hits read
+    this file and return verbatim.
   - Marginal cache (in-process). Held inside the ``ServerState``; reused
     across cohorts within the same process. Survives requests, not
     restarts.
@@ -29,13 +28,12 @@ import json
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from pydantic_core import PydanticCustomError
 
@@ -51,16 +49,11 @@ from service import (
 # Config
 # ---------------------------------------------------------------------------
 
-# Cache directory for cohort results. Files written here are served via
-# the static mount below and live indefinitely (content-hash keyed, so
-# no invalidation needed). Roughly 50-200KB per cohort; ~100MB at 1000
-# unique cohorts.
+# Cache directory for cohort responses. Content-hash keyed, so no
+# invalidation is needed; files live indefinitely. One file per cohort
+# (``response_<hash>.json``) holds the full response including inline
+# tract_scores. Roughly 50-200KB per file; ~100MB at 1000 unique cohorts.
 COHORT_CACHE_DIR = Path(__file__).parent / "cohort_cache"
-
-# Static URL path under which cohort tract-scores files are served.
-# A request comes back from POST /score with a tract_scores_url like
-# "/cohorts/tract_scores_<hash>.json" that the frontend fetches.
-COHORT_URL_PREFIX = "/cohorts"
 
 # Known PUMS fields. The set is sourced from pipeline.PERSON_VARS +
 # HOUSING_VARS plus derived SAME_SEX. Used for early validation so we
@@ -128,9 +121,9 @@ class CohortRequest(BaseModel):
     name: str
     vibe: str
     threshold: float = Field(default=0.5, gt=0, le=1)
-    tract_marginals: list[str] = Field(..., min_length=1, max_length=MAX_MARGINALS)
-    vector: list[VectorEntry] = Field(..., min_length=1)
-    proxy_gap: str | None = None
+    tract_marginals: List[str] = Field(..., min_length=1, max_length=MAX_MARGINALS)
+    vector: List[VectorEntry] = Field(..., min_length=1)
+    proxy_gap: Optional[str] = None
 
     @field_validator("vector")
     @classmethod
@@ -155,27 +148,31 @@ class CohortStats(BaseModel):
     concentration_index: float
     n_pumas_nonzero: int
     n_pumas_total: int
-    r_squared: float | None
-    loocv_r_squared: float | None
-    morans_i_residual: float | None
-    morans_i_z_score: float | None
-    morans_i_p_value: float | None
-    residual_std: float | None
-    lambda_chosen: float | None
-    fay_herriot_median_gamma: float | None
-    feature_names: list[str]
-    feature_coefs: list[float | None]
+    r_squared: Optional[float]
+    loocv_r_squared: Optional[float]
+    morans_i_residual: Optional[float]
+    morans_i_z_score: Optional[float]
+    morans_i_p_value: Optional[float]
+    residual_std: Optional[float]
+    lambda_chosen: Optional[float]
+    fay_herriot_median_gamma: Optional[float]
+    feature_names: List[str]
+    feature_coefs: List[Optional[float]]
     marginal_reliability_summary: str
 
 
 class CohortResponse(BaseModel):
-    """POST /score success response. See cohort_api_spec.md §3.1."""
+    """POST /score success response. See cohort_api_spec.md §3.1.
 
-    cohort_id: str
-    tract_scores_url: str
+    ``tract_scores`` is the same nested ``{tract_geoid: {id: score}}``
+    shape the batch pipeline writes, so the frontend's multi-cohort
+    merge logic handles single-cohort responses verbatim.
+    """
+
+    id: str
+    name: str
+    tract_scores: Dict[str, Dict[str, float]]
     stats: CohortStats
-    cache_status: Literal["hit", "miss"]
-    elapsed_ms: int
 
 
 # ---------------------------------------------------------------------------
@@ -221,17 +218,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve cohort_cache/ at /cohorts/* so the frontend can fetch the
-# tract-scores JSON files referenced in the response's tract_scores_url.
-# StaticFiles validates directory existence at import time, so ensure
-# the cache directory exists before mounting (the lifespan handler will
-# also ensure this at startup, but it runs after module import).
 COHORT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-app.mount(
-    COHORT_URL_PREFIX,
-    StaticFiles(directory=str(COHORT_CACHE_DIR)),
-    name="cohort_cache",
-)
 
 
 # ---------------------------------------------------------------------------
@@ -239,16 +226,9 @@ app.mount(
 # ---------------------------------------------------------------------------
 
 
-def _tract_scores_path(cohort_hash: str) -> Path:
-    return COHORT_CACHE_DIR / f"tract_scores_{cohort_hash}.json"
-
-
-def _response_sidecar_path(cohort_hash: str) -> Path:
+def _response_path(cohort_hash: str) -> Path:
+    """Disk location of the cached response for a given content hash."""
     return COHORT_CACHE_DIR / f"response_{cohort_hash}.json"
-
-
-def _tract_scores_url(cohort_hash: str) -> str:
-    return f"{COHORT_URL_PREFIX}/tract_scores_{cohort_hash}.json"
 
 
 # ---------------------------------------------------------------------------
@@ -273,65 +253,55 @@ def health() -> dict:
 def score(req: CohortRequest, request: Request) -> CohortResponse:
     """Score a single cohort end-to-end.
 
-    Cache-aware: identical computational inputs (same content hash) skip
-    the pipeline and return the prior response from the disk sidecar.
+    Cache-aware: identical computational inputs (same content hash)
+    return the cached response directly from disk. Server-side timing
+    is logged for observability but not exposed in the response body.
     """
     t0 = time.time()
     state: ServerState = request.app.state.server_state
 
     cohort_def = req.model_dump()
     cohort_hash = canonical_cohort_hash(cohort_def)
+    cache_file = _response_path(cohort_hash)
 
-    # Cache hit path: prior identical request already has tract scores and
-    # response sidecar on disk. Return the sidecar verbatim, only updating
-    # cache_status and elapsed_ms.
-    sidecar = _response_sidecar_path(cohort_hash)
-    tract_file = _tract_scores_path(cohort_hash)
-    if sidecar.exists() and tract_file.exists():
-        prior = json.loads(sidecar.read_text())
-        prior["cache_status"] = "hit"
-        prior["elapsed_ms"] = int((time.time() - t0) * 1000)
-        prior["tract_scores_url"] = _tract_scores_url(cohort_hash)
+    # Cache hit: response file holds everything (id, name, tract_scores,
+    # stats). Return verbatim.
+    if cache_file.exists():
+        prior = json.loads(cache_file.read_text())
+        elapsed_ms = int((time.time() - t0) * 1000)
+        print(f"[score] hit  {cohort_hash} ({req.name!r}): {elapsed_ms}ms")
         return CohortResponse.model_validate(prior)
 
     # Cache miss: run the pipeline. The service computes the canonical
-    # hash internally too, so the returned cohort_id must match the hash
-    # we computed above. A mismatch would indicate the two
+    # hash internally too, so the returned id must match the hash we
+    # computed above. A mismatch would indicate the two
     # canonical_cohort_hash callers diverged, which is a programming bug
     # that should surface as a 500 rather than be silenced by `python -O`.
     print(f"[score] miss {cohort_hash} ({req.name!r}): running pipeline...")
     result = score_one_cohort(state, cohort_def)
-    if result["cohort_id"] != cohort_hash:
+    if result["id"] != cohort_hash:
         raise HTTPException(
             status_code=500,
             detail=(
                 f"hash mismatch: server={cohort_hash} "
-                f"service={result['cohort_id']} — canonical_cohort_hash "
+                f"service={result['id']} — canonical_cohort_hash "
                 "diverged between server.py and service.py"
             ),
         )
 
-    # Persist tract scores in the spec's nested {tract: {cohort_id: score}}
-    # shape. Frontend's existing merge logic handles this verbatim.
-    tract_file.write_text(json.dumps(result["tract_scores"]))
+    # Persist the full response to disk so future cache hits are O(1).
+    # Shape matches CohortResponse exactly so we can model_validate the
+    # file contents on hit without any reshaping.
+    cache_file.write_text(json.dumps(result))
 
-    # Build and persist the response sidecar so future cache hits are O(1).
-    response_dict = {
-        "cohort_id": cohort_hash,
-        "tract_scores_url": _tract_scores_url(cohort_hash),
-        "stats": result["stats"],
-        "cache_status": "miss",
-        "elapsed_ms": result["elapsed_ms"],
-    }
-    sidecar.write_text(json.dumps(response_dict))
-
+    elapsed_ms = int((time.time() - t0) * 1000)
     print(
         f"[score] miss {cohort_hash} done: "
         f"{result['stats']['weighted_member_count']:,} members, "
-        f"{result['elapsed_ms']/1000:.1f}s"
+        f"{elapsed_ms / 1000:.1f}s"
     )
 
-    return CohortResponse.model_validate(response_dict)
+    return CohortResponse.model_validate(result)
 
 
 # ---------------------------------------------------------------------------

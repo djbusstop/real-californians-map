@@ -16,7 +16,7 @@ Then open http://localhost:3000.
 
 `sync-data` copies `tract_scores.json` and `tracts_ca.geojson` from `../data-pipeline/data/`. Re-run `sync-data` whenever you re-run the pipeline.
 
-After editing `subcultures.yaml`, the typical iteration loop from this folder is:
+After editing `lib/library.json`, the typical iteration loop from this folder is:
 
 ```sh
 (cd ../data-pipeline && source .venv/bin/activate && python pipeline.py) && npm run sync-data && npm run dev
@@ -36,7 +36,7 @@ After editing `subcultures.yaml`, the typical iteration loop from this folder is
 - `DOTS_PER_UNIT` in `components/MapView.tsx` controls dot density. Currently 20 (one dot ≈ 20 weighted people). Lower = more dots = denser visual.
 - The zoom-radius interpolation expression in `components/MapView.tsx` controls dot size at each zoom level. Edit the array of `(zoom, radius)` pairs inside the `circle-radius` paint property.
 - `COLORS` in `lib/colors.ts` is the single source of truth for cohort colors. Edit one map there and the sidebar, dots, and mobile legend all update consistently.
-- Cohort definitions, trait vectors, and tract marginals live in `../data-pipeline/subcultures.yaml`. Edit there, re-run the pipeline, re-sync data.
+- Cohort definitions, trait vectors, and tract marginals live in `lib/library.json`. Edit there, re-run the pipeline, re-sync data.
 
 ## File structure
 
