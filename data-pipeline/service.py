@@ -304,9 +304,7 @@ def score_one_cohort(state: ServerState, cohort_def: dict) -> dict:
     # the same cache file downstream.
     sub_id = canonical_cohort_hash(cohort_def)
     cohort_def_with_id = {**cohort_def, "id": sub_id}
-    threshold = float(
-        cohort_def_with_id.get("threshold", DEFAULT_MEMBERSHIP_THRESHOLD)
-    )
+    threshold = float(cohort_def_with_id.get("threshold", DEFAULT_MEMBERSHIP_THRESHOLD))
 
     # 1. Score PUMS records: gate, fit score, member indicator.
     gate, fit_score = score_subculture(state.pums_df, cohort_def_with_id)
@@ -370,7 +368,7 @@ def score_one_cohort(state: ServerState, cohort_def: dict) -> dict:
         state.spatial_weights,
         state.puma_centroids,
         INTERACTIVE_N_BOOTSTRAP,
-        1,  # bootstrap_n_jobs (serial; the service is itself the unit of parallelism)
+        4,  # bootstrap_n_jobs (serial; the service is itself the unit of parallelism)
         marginal_moes,
     )
 
@@ -399,9 +397,7 @@ def score_one_cohort(state: ServerState, cohort_def: dict) -> dict:
         "lambda_chosen": summary.get("lambda"),
         "fay_herriot_median_gamma": _round_or_none(fh.get("median_gamma"), 4),
         "feature_names": summary.get("feature_names", []),
-        "feature_coefs": [
-            _round_or_none(c, 4) for c in summary.get("coefs", [])
-        ],
+        "feature_coefs": [_round_or_none(c, 4) for c in summary.get("coefs", [])],
     }
 
     # Compose the tract scores object in the same nested shape the existing
