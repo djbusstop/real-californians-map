@@ -368,7 +368,10 @@ def score_one_cohort(state: ServerState, cohort_def: dict) -> dict:
         state.spatial_weights,
         state.puma_centroids,
         INTERACTIVE_N_BOOTSTRAP,
-        4,  # bootstrap_n_jobs (serial; the service is itself the unit of parallelism)
+        # bootstrap_n_jobs: 4 threads via joblib. NNLS releases the GIL during
+        # the C-level Lawson-Hanson loop, so threading parallelizes effectively
+        # without process overhead.
+        4,
         marginal_moes,
     )
 
