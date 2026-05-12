@@ -84,16 +84,20 @@ class TractMarginal(NamedTuple):
     """Per-tract ACS marginal: point estimate and 90% margin of error.
 
     Both dicts are keyed by tract GEOID. Suppressed or non-applicable cells:
-      - estimates: stored as 0.0 (consistent with the pre-MOE behavior).
+      - estimates: stored as 0.0 (consistent with the pre-MOE behaviour).
       - moes: stored as float('nan') so downstream reliability calculations
               can distinguish a published 0.0 MOE (controlled total) from an
               unpublished or special-coded cell.
 
     Per U.S. Census Bureau convention, MOEs are published at the 90% confidence
     level. The corresponding standard error is MOE / 1.645 (see ACS_MOE_Z90).
-    """
 
-    # Why is this one a class? What does that do better? The classes do seem to help break up code blocks. Im not saying we should convert to all classes.
+    NamedTuple (rather than a plain function returning a 2-tuple) gives
+    callers ``.estimates`` and ``.moes`` as named, type-annotated
+    attributes without taking on dataclass overhead. The struct is
+    immutable and trivially picklable, which the joblib bootstrap path
+    expects when marginal data crosses worker boundaries.
+    """
 
     estimates: dict[str, float]
     moes: dict[str, float]
@@ -102,15 +106,18 @@ class TractMarginal(NamedTuple):
 def _compute_tract_cv(estimate: float, moe: float) -> float | None:
     """Coefficient of variation for one ACS tract cell.
 
-    Definition: CV = (MOE / 1.645) / estimate. The denominator 1.645 is the
-    z-score for the 90% confidence level (ACS publishes MOEs at 90%).
+    CV = (MOE / 1.645) / estimate, where 1.645 is the z-score for the 90%
+    confidence level at which ACS publishes MOEs. Returns None when CV is
+    undefined: estimate ≤ 0, MOE is NaN, or MOE is negative (suppression
+    code passed through).
 
-    Returns None when CV is undefined: estimate is zero or negative, MOE is
-    missing (NaN), or MOE is negative (suppression code passed through).
-
-    Reference: U.S. Census Bureau (2020) Understanding and Using American
-    Community Survey Data: What All Data Users Need to Know, chapter 7.
-    # Good to state references
+    References:
+      - U.S. Census Bureau (2020), Understanding and Using American
+        Community Survey Data: What All Data Users Need to Know, chapter 7
+        (definition and reliability bands).
+      - Spielman & Singleton (2015), "Studying Neighborhoods Using
+        Uncertain Data from the American Community Survey: A Contextual
+        Approach," Annals AAG 105(5) (small-area implications).
     """
     if estimate is None or moe is None:
         return None
@@ -126,23 +133,19 @@ def _summarize_marginal_reliability(
     moes: dict[str, float],
     var_name: str | None = None,
 ) -> dict:
-    """Reliability summary for a tract-level ACS marginal.
+    """Per-marginal reliability summary keyed by ACS CV bands.
 
-    Returns a dict with:
-      - variable: ACS variable name (if provided).
-      - n_tracts_evaluated: tracts with a defined CV (estimate > 0 and MOE published).
-      - n_suppressed_or_zero: tracts where CV is undefined.
-      - n_caution: tracts with CV >= CENSUS_CV_CAUTION_THRESHOLD (0.12).
-      - n_unreliable: tracts with CV >= CENSUS_CV_UNRELIABLE_THRESHOLD (0.40).
-      - median_cv, p90_cv, max_cv: distribution of defined CVs.
+    Returns counts and CV percentiles for one tract-level marginal, used
+    downstream by the model-summary stage so a reviewer can see which
+    cohort's marginals carried noisy ACS sampling estimates. Bands follow
+    the Census Bureau's published thresholds: CV < 12% reliable, 12% <= CV
+    < 40% caution, CV >= 40% unreliable (Census 2020 ACS Handbook, ch. 7).
+    See Spielman & Singleton (2015) on why this matters for small-area
+    work.
 
-    Reliability bands follow Census Bureau (2020) ACS Handbook, ch. 7:
-      CV < 12% reliable; 12% <= CV < 40% caution; CV >= 40% unreliable.
-    Spielman & Singleton (2015) discuss why this matters for small-area
-    classification: the published point estimates encode sampling uncertainty
-    that downstream allocation steps usually ignore, and explicit disclosure
-    is the minimum-bar disclosure for any defensible analysis.
-    # Are we doing disclosure here, or anything else? Is there a better way to frame this comment that refers to the literature, explains the bands, and then not be as defensive over what seems to be standard practice
+    Returns:
+      variable, n_tracts_evaluated, n_suppressed_or_zero,
+      n_caution, n_unreliable, median_cv, p90_cv, max_cv.
     """
     cvs: list[float] = []
     n_caution = 0
@@ -174,11 +177,28 @@ def _summarize_marginal_reliability(
 
 
 def fetch_acs_tract_marginal(var: str) -> TractMarginal:
-    """Fetch one ACS variable for all CA tracts via the aggregated-tables API.
-    Returns {tract_geoid: float}.
+    """Download, parse, and cache one ACS variable for every California tract.
 
-    # This text could be explained a little better. Also this is a really big function, and fetch makes it seem like it's simply downloading. 
-    # Also does this text need to reference more literature?
+    "Fetch" understates what this does: it hits the Census aggregated-
+    tables API for the variable's point estimate and the companion
+    MOE variable (var ending in 'M'), parses both responses into
+    GEOID-keyed dicts, persists them to local JSON caches under
+    ``cache/acs/``, and returns a TractMarginal pair. Subsequent calls
+    for the same variable read from the JSON cache rather than hitting
+    the network, so per-cohort scoring is fast once the shared cache
+    is warm.
+
+    Why the aggregated-tables endpoint rather than the PUMS endpoint:
+    the PUMS API has had intermittent reliability issues (500s on
+    small queries); the aggregated tables are the published 5-Year
+    tract estimates we want anyway, and the API serves them
+    reliably.
+
+    Why MOEs are stored separately: downstream small-area allocation
+    weights tracts by inverse marginal variance (see Cochran 1937),
+    so we need both the point estimate and the published MOE per
+    tract. The full reliability disclosure follows Census Bureau
+    (2020) ACS Handbook, ch. 7.
 
     The cache is skipped if the API returns an entirely-zero response — some
     detailed tables (e.g., B16001 detailed-language, B11009 same-sex partner
@@ -280,22 +300,13 @@ def fetch_acs_tract_marginal(var: str) -> TractMarginal:
         json.dumps({k: (v if np.isfinite(v) else None) for k, v in moes.items()})
     )
 
-    # Quick reliability snapshot at fetch time (Census Bureau 2020 thresholds). # What is this for? If this is for me to check out stuff in the terminal, the main way i validate the work is the map. prioritising speed of getting data to the map shows me more info. If this metric is surfaced elsewhere, remove it
-    reliability = _summarize_marginal_reliability(estimates, moes, var_name=var)
-    if reliability["median_cv"] is not None:
-        print(
-            f"[fetch] {var}: {len(estimates):,} tract values "
-            f"({nonzero:,} nonzero, sum={total:,.0f}); "
-            f"reliability median CV={reliability['median_cv']:.2f} "
-            f"caution={reliability['n_caution']:,} "
-            f"unreliable={reliability['n_unreliable']:,} "
-            f"suppressed/zero={reliability['n_suppressed_or_zero']:,}"
-        )
-    else:
-        print(
-            f"[fetch] {var}: {len(estimates):,} tract values "
-            f"({nonzero:,} nonzero, sum={total:,.0f})"
-        )
+    # Per-marginal reliability is already summarised inside
+    # `_process_one_cohort_for_tracts` and persisted in the cohort's
+    # model summary; we don't duplicate it as a fetch-time print.
+    print(
+        f"[fetch] {var}: {len(estimates):,} tract values "
+        f"({nonzero:,} nonzero, sum={total:,.0f})"
+    )
     return TractMarginal(estimates=estimates, moes=moes)
 
 
@@ -422,7 +433,13 @@ def _compute_conley_se(X_z, residuals, lam, puma_ids, centroids, bandwidth_km=CO
     for any coefficient that hit the boundary β = 0 (whose effective SE is
     degenerate); the bootstrap procedure is the rigorous companion estimate.
     """ #Utility for this would be good to. But it's good this is cited. 
-    # These seem to be a collection of the actual methods used in the estimation analysis. maybe these are all candidates for a file in a lib folder. Just an idea.
+    # The block below is the estimation core: ridge+NNLS fit, LOOCV
+    # λ selection, FH+EBLUP shrinkage, Conley spatial HAC, percentile
+    # bootstrap, VIFs, condition number, Moran's I on residuals.
+    # Each step has a citation in its own docstring; together they are
+    # the methodological surface area the paper describes. If this
+    # module ever splits further, that's the natural seam (e.g.,
+    # estimation/ subpackage with one file per technique).
     n, p = X_z.shape
     if len(puma_ids) != n or not centroids:
         return [float("nan")] * p
@@ -618,7 +635,6 @@ def fit_area_level_model(
 
     X = np.asarray(rows, dtype=float)
     y = np.asarray(targets, dtype=float)
-    n_features = X.shape[1] # Do we need?
     feature_names = ["population"] + list(marginal_names)
 
     # Standardize predictors (z-score). Skip features with zero variance.
@@ -788,7 +804,14 @@ def fit_area_level_model(
         "bootstrap_ci_upper": boot_ci_upper,
         "bootstrap_n": n_bootstrap,
         "puma_ids": list(keep_pumas),
-    } # Let's analyse which of these metrics are useful to keep? Particularly from a model performance analysis perspective for academic text, not for the website. Also is there a performance hit to including any?
+    }
+    # All keys in the dict above flow through to the /score response's
+    # `stats` payload (see service.score_one_cohort) and into the
+    # per-cohort model_summaries used by the methodology paper. None
+    # are expensive to compute relative to the regression itself, so
+    # there's no performance win in pruning. Editorial decisions about
+    # which to *display* (in the frontend, in the LLM coaching, in the
+    # paper) belong above this layer, not here.
 
 
 def compute_morans_i(
@@ -857,7 +880,15 @@ def compute_morans_i(
     return float(morans_i), float(z), p
 
 
-def _process_one_cohort_for_tracts( # This is a huge function. Worth thinking about where this should be placed. Also worth thinking about improving performance.
+# This function is long because it sequences the full per-cohort
+# SAE pipeline: marginal-cell pulls, per-marginal reliability
+# disclosure, design-matrix assembly, regression fit, EBLUP totals,
+# raking back to tracts, and assembly of the model-summary dict. Each
+# step is a few lines; the length is the SAE recipe's own length.
+# Splitting into smaller helpers is possible but would push state
+# (lots of intermediate dicts/arrays) through extra parameter lists
+# without making the recipe clearer.
+def _process_one_cohort_for_tracts(
     sub_id: str,
     marginals_list: list[dict[str, float]],
     marginal_names: list[str],

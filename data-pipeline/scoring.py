@@ -34,18 +34,20 @@ from data_prep import DEFAULT_MEMBERSHIP_THRESHOLD  # noqa: F401
 
 
 def parse_marginal_specs(sub: dict) -> list[str]:
-    """Return [variable, ...] from a cohort YAML record.
-    Supports flat list `tract_marginals: [VAR, ...]`, single `tract_marginal: VAR`,
-    and the legacy weighted form `tract_marginals: [{var, weight}, ...]` (weights
-    ignored — coefficients are fit from data via NNLS+Ridge regression).""" # If weights are ignored, why are they an option? If there is no client using this the weights format, we can remove it.
+    """Return the list of ACS variable codes from a cohort definition.
+
+    Supports two input shapes:
+      tract_marginals: [VAR, ...]   - the canonical form
+      tract_marginal: VAR           - singular convenience for one marginal
+
+    Older versions of the project accepted a weighted dict form
+    `tract_marginals: [{var, weight}, ...]`; coefficients are now fit from
+    data by ridge+NNLS so explicit weights have no effect. No current
+    cohort in library.json uses the dict form, so support for it has
+    been removed.
+    """
     if "tract_marginals" in sub and sub["tract_marginals"]:
-        out = []
-        for m in sub["tract_marginals"]:
-            if isinstance(m, str):
-                out.append(m)
-            elif isinstance(m, dict) and "var" in m:
-                out.append(m["var"])
-        return out
+        return [m for m in sub["tract_marginals"] if isinstance(m, str)]
     if "tract_marginal" in sub and sub["tract_marginal"]:
         return [sub["tract_marginal"]]
     return []

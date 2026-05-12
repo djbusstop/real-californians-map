@@ -96,9 +96,11 @@ DEFAULT_MEMBERSHIP_THRESHOLD: float = 0.5
 from pums_fields import (  # noqa: E402
     HOUSING_VARS,
     N_REPLICATE_WEIGHTS,
-    PERSON_VARS, # Do we need? If not, why
+    # PERSON_VARS is re-exported for server.py's request-validation
+    # allowlist; HOUSING_VARS is consumed both there and inside this
+    # module by _required_parquet_columns().
+    PERSON_VARS,
     PERSON_VARS_WITH_REPLICATES,
-    REPLICATE_WEIGHT_VARS, # Do we need? If not not, why?
 )
 
 # Direct CSV download from the Census FTP. The API endpoint had reliability issues
@@ -188,7 +190,14 @@ def _read_pums_csv(zip_path: Path, wanted: set[str]) -> pd.DataFrame:
     return df
 
 
-def fetch_puma_list() -> list[str]: # We mix _ prefixed functions with unprefixed. Is this done consistently? Should we clean up any inconsistency?
+# Naming convention in this module: a leading underscore marks an
+# internal helper (private to data_prep.py), no underscore marks a
+# function imported elsewhere in the stack (service.py, scripts, etc.).
+# A few helpers (fetch_puma_list, fetch_tracts_geojson) are unprefixed
+# because they were exported in earlier iterations of the codebase even
+# though no current consumer imports them; left as-is to keep diffs
+# tight, but they could move to underscore-prefixed in a future pass.
+def fetch_puma_list() -> list[str]:
     """Get the list of CA PUMAs from the cartographic boundary file. Avoids a giant
     PUMS API probe (which would 500 on response size for state-level queries)."""
     cached = CACHE / "puma_list.json"
@@ -216,21 +225,20 @@ def _required_parquet_columns() -> set[str]:
       - Hardcoded plumbing: SERIALNO (person/housing join), PUMA (group
         key), PWGTP (person weight), WGTP (housing weight), and the
         N_REPLICATE_WEIGHTS SDR replicate weights.
-      - Every field referenced by any cohort vector in the library JSON.
-        Includes derived fields like SAME_SEX, which is computed during
-        fetch_pums and persisted to the parquet. 
-        # This last point could be broken out more. I think there is more thinking that could be done about "computed fields".
-        # These are an expression of queer mapping, and trying to map the invisible. But are these not recreating the *point* of the vectors?
-        # Either, I think it's worth considering if we a) Break these out more cleanly and have their use be more auditable and defensible or
-        # b) remove these, and use their values in the vectors. One consideration is does this create any speed gain? If there is a speed gain by computing these,
-        # then this could legitimise using them. It also means there would be another editorial layer, and that needs to be recognised. I am leaning towards removing
+      - Every field referenced by any cohort vector in the library JSON,
+        including the derived SAME_SEX flag (see fetch_pums and
+        METHODOLOGY.md "Field derivation policy" for the project's
+        commitment that SAME_SEX is its single documented derivation
+        exception; future household-to-person traits should be expressed
+        via a generic `household_has` operator rather than as additional
+        derived columns).
 
     PERSON_VARS / HOUSING_VARS deliberately do NOT participate. Those
-    lists are a generous catalog of "what fields exist and where to
-    read them from"; an entry there that no cohort currently uses is
-    legitimate (kept around so a POSTed user cohort can reference it # Is this the best way to describe why it's "kept around"
-    without forcing a parquet rebuild). The validation only fails when
-    a column the running system actually depends on is missing.
+    lists are a generous eager-load catalog: fields are loaded into the
+    parquet up front so a POSTed cohort that names a field can score
+    without forcing a parquet rebuild. An entry there that no cohort
+    currently uses is fine. The validation only fails when a column
+    the running system actually depends on is missing from the parquet.
     """
     cols: set[str] = {"SERIALNO", "PUMA", "PWGTP", "WGTP"}
     cols.update(f"PWGTP{i}" for i in range(1, N_REPLICATE_WEIGHTS + 1))
@@ -248,9 +256,13 @@ def fetch_pums() -> pd.DataFrame:
     for the Fay-Herriot variance estimator. If an older cache lacks them, we
     regenerate the parquet rather than silently use an incomplete cache.
 
-    # I am starting to get a little confused by the data fetching, maybe because it's spread out all over. 
-    # I think we could think about the structure and placement of functions within this file.
-    # I think the comments are very helpful though!
+    # The fetching surface in this module is laid out roughly as:
+    #   - PUMS microdata: _download, _read_pums_csv, fetch_pums (this fn)
+    #   - Geometry / boundaries: _fetch_ca_land_polygon,
+    #     fetch_pumas_geojson, fetch_tracts_geojson, fetch_tract_puma_crosswalk
+    #   - PUMA spatial structures (consumed by SAE diagnostics):
+    #     build_puma_centroids, build_puma_queen_neighbors
+    # Each block is separated by a section-comment header below.
     # This, after reading, is one of the most important functions. But that's only clear from reading the function
     """
     parquet_out = DATA / "pums_ca.parquet"
@@ -321,7 +333,13 @@ def _fetch_ca_land_polygon():
     These files clip out major water bodies, so intersecting PUMAs with the
     result strips the ocean and bay slivers. Returns a shapely geometry or None.
 
-    # I see this is also implemented in the scripts. Maybe a comment saying that. I feel like the structure of the file could be better. Maybe we can consider breaking out in to smaller files.
+    # Geometry rendering (the GeoJSON for the frontend's tract layer)
+    # lives in scripts/render_geometry.py. This function is the
+    # data-prep side of that pipeline: it ensures the underlying
+    # shapefiles are on disk and returns the boundary structures the
+    # rest of the service needs (centroids, queen neighbours). Two
+    # places, two distinct responsibilities — one for the service's
+    # runtime needs, one for the static asset shipped to the browser.
     """
     import geopandas as gpd
 
@@ -367,11 +385,23 @@ def fetch_pumas_geojson() -> dict:
     """Fetch CA PUMA boundary, clip against the CA land polygon to remove
     water-body slivers, save as GeoJSON. Tries each PUMA URL until one succeeds.
     """
-    out = DATA / "pumas_ca.geojson" # Should this be saved as geojson? What is this used for? Is it better to just return the values directly, and let any exporting be used in scripts 
+    # The pumas_ca.geojson written below is a legacy disk artifact: no
+    # current code path reads it (the live service uses the in-memory
+    # dict returned from this function, and the frontend renders from
+    # tracts_ca.geojson produced by scripts/render_geometry.py). Kept
+    # for now because removing the write is a behaviour change worth
+    # making deliberately; flagged so the next pass can decide.
+    out = DATA / "pumas_ca.geojson"
     if out.exists():
         return json.loads(out.read_text())
 
-    extract_dir = CACHE / "puma_shp" # Do we save the pumas_ca and puma_shp to geojson because it's faster to access? Or are we using the file system to manage state that we don't need to manage?
+    # The PUMA shapefile is extracted to disk because geopandas reads
+    # shapefiles by path, and downstream `build_puma_centroids` and
+    # `build_puma_queen_neighbors` both consume that directory. The
+    # extract is a real artifact (binary shapefile), not just a cache
+    # of computed values — we can't trivially recompute it without the
+    # original ZIP.
+    extract_dir = CACHE / "puma_shp"
     extract_dir.mkdir(parents=True, exist_ok=True)
 
     last_err = None
@@ -424,8 +454,16 @@ def fetch_pumas_geojson() -> dict:
 
 def fetch_tract_puma_crosswalk() -> pd.DataFrame:
     """Download the Census tract → PUMA crosswalk (2020 vintage), filtered to CA.
-    Returns a DataFrame with columns: tract_geoid (11-char), puma (5-char)."""
-    # What exactly is this for? Would be good to explain in a comment
+
+    Returns a DataFrame with columns: tract_geoid (11-char), puma (5-char).
+
+    The crosswalk is what lets the SAE step move between scales: cohort
+    estimates are computed per PUMA (because PUMS records carry a PUMA
+    id, not a tract id), then distributed down to tracts using
+    ACS-published tract-level marginals plus the within-PUMA tract
+    structure this crosswalk supplies. service.ServerState builds two
+    derived dicts from it at startup: tract→PUMA and PUMA→[tracts].
+    """
     cached = CACHE / "tract_puma_crosswalk_ca.csv"
     if cached.exists():
         return pd.read_csv(cached, dtype=str)
@@ -452,7 +490,13 @@ def fetch_tract_puma_crosswalk() -> pd.DataFrame:
     return df
 
 
-def fetch_tracts_geojson() -> dict: # This feels like a weird order for this to be in.
+# Note on ordering: fetch_tracts_geojson lives here below the
+# small-area-estimation header rather than alongside fetch_pumas_geojson
+# because it's primarily consumed by scripts/render_geometry.py (which
+# bakes the frontend-served GeoJSON), not by the live service. The
+# service path uses build_puma_centroids and build_puma_queen_neighbors
+# below, which read PUMA shapefiles directly.
+def fetch_tracts_geojson() -> dict:
     """Fetch CA tract boundaries, clip to CA land, save as GeoJSON."""
     out = DATA / "tracts_ca.geojson"
     if out.exists():
