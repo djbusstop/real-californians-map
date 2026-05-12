@@ -1,0 +1,152 @@
+{
+  "_meta": {
+    "dataset": "ACS PUMS 2019-2023 5-Year",
+    "topics_source": "U.S. Census Bureau ACS Subject Definitions",
+    "data_dictionary": "https://www2.census.gov/programs-surveys/acs/tech_docs/pums/data_dict/PUMS_Data_Dictionary_2019-2023.pdf",
+    "note": "Identifier and weight fields have no `topic` key; analytical variables are mapped to Census ACS topic names. SAME_SEX is the only derived field; see METHODOLOGY.md for the derivation policy. Replicate weights PWGTP1..PWGTP{n_replicate_weights} are not enumerated here; they are derived in pums_fields.py from the count."
+  },
+  "n_replicate_weights": 80,
+  "person_vars": [
+    {"name": "PUMA", "description": "5-digit PUMA code (2020 vintage)"},
+    {"name": "ST", "description": "state FIPS (always 06 in this project, kept for parity)"},
+    {"name": "PWGTP", "description": "person weight (main estimate; integer count of real people the record represents)"},
+    {"name": "SERIALNO", "description": "household serial, join key to housing record"},
+
+    {"name": "AGEP", "topic": "Age and Sex", "description": "age in years"},
+    {"name": "SEX", "topic": "Age and Sex", "description": "1 male, 2 female"},
+
+    {"name": "RAC1P", "topic": "Race", "description": "race recoded major (1 white, 2 Black, 6 Asian, ...)"},
+    {"name": "RAC2P", "topic": "Race", "description": "race recoded detailed (sub-groups within RAC1P)"},
+    {"name": "RACAIAN", "topic": "Race", "description": "multi-race flag: any American Indian / Alaska Native (1 yes, 0 no)"},
+    {"name": "RACASN", "topic": "Race", "description": "multi-race flag: any Asian"},
+    {"name": "RACBLK", "topic": "Race", "description": "multi-race flag: any Black / African American"},
+    {"name": "RACNHPI", "topic": "Race", "description": "multi-race flag: any Native Hawaiian / Pacific Islander"},
+    {"name": "RACSOR", "topic": "Race", "description": "multi-race flag: any 'some other race'"},
+    {"name": "RACWHT", "topic": "Race", "description": "multi-race flag: any White"},
+
+    {"name": "HISP", "topic": "Hispanic or Latino Origin", "description": "Hispanic origin (1 not Hispanic, 2-24 specific origins)"},
+
+    {"name": "ANC1P", "topic": "Ancestry", "description": "primary ancestry code"},
+    {"name": "ANC2P", "topic": "Ancestry", "description": "secondary ancestry code (for mixed-heritage cohorts)"},
+
+    {"name": "NATIVITY", "topic": "Place of Birth", "description": "1 US-born, 2 foreign-born"},
+    {"name": "POBP", "topic": "Place of Birth", "description": "place of birth"},
+    {"name": "CIT", "topic": "Citizenship Status", "description": "citizenship status (1-4 native, 5 naturalized, 6 not citizen)"},
+    {"name": "YOEP", "topic": "Place of Birth", "description": "year of entry to US (for non-native-born)"},
+    {"name": "DECADE", "topic": "Place of Birth", "description": "decade of entry to US (1-7)"},
+
+    {"name": "SCHL", "topic": "Educational Attainment", "description": "educational attainment (1 none ... 24 doctorate)"},
+    {"name": "SCH", "topic": "School Enrollment", "description": "current school enrollment (1 not enrolled, 2 public, 3 private)"},
+    {"name": "SCHG", "topic": "School Enrollment", "description": "current grade level (1-16)"},
+    {"name": "FOD1P", "topic": "Undergraduate Field of Degree", "description": "primary field of degree"},
+
+    {"name": "LANP", "topic": "Language Spoken at Home and Ability to Speak English", "description": "specific language at home (1200 Spanish, 2050 Vietnamese, etc.)"},
+    {"name": "LANX", "topic": "Language Spoken at Home and Ability to Speak English", "description": "speaks non-English at home (1 yes, 2 no)"},
+    {"name": "ENG", "topic": "Language Spoken at Home and Ability to Speak English", "description": "English proficiency (1 very well .. 4 not at all)"},
+
+    {"name": "MAR", "topic": "Marital Status", "description": "marital status (1 married, 2 widowed, 3 divorced, 4 separated, 5 never married)"},
+    {"name": "MARHT", "topic": "Marital History", "description": "times married (1-3)"},
+    {"name": "MARHYP", "topic": "Marital History", "description": "year last married (4-digit; for newlywed signal)"},
+    {"name": "MARHD", "topic": "Marital History", "description": "divorced in past 12 months (1 yes, 2 no; acute vs. ever-divorced)"},
+    {"name": "MSP", "topic": "Marital Status", "description": "married, spouse present/absent recode (cleaner than MAR + RELSHIPP combo)"},
+
+    {"name": "RELSHIPP", "topic": "Relationship", "description": "relationship to householder (used to derive SAME_SEX)"},
+    {"name": "FER", "topic": "Fertility", "description": "gave birth in last 12 mo (1 yes, 2 no; women 15-50 only)"},
+    {"name": "NOP", "topic": "Relationship", "description": "number of own children"},
+    {"name": "NRC", "topic": "Relationship", "description": "number of related children under 18"},
+    {"name": "PAOC", "topic": "Relationship", "description": "presence and age of own children (1-4)"},
+    {"name": "GCL", "topic": "Grandparents as Caregivers", "description": "grandparents living with grandchildren under 18 (1 yes, 2 no)"},
+
+    {"name": "DIS", "topic": "Disability Status", "description": "any disability (1 with, 2 without)"},
+    {"name": "DPHY", "topic": "Disability Status", "description": "ambulatory difficulty"},
+    {"name": "DREM", "topic": "Disability Status", "description": "cognitive / mental-health difficulty"},
+    {"name": "DEAR", "topic": "Disability Status", "description": "hearing difficulty"},
+    {"name": "DEYE", "topic": "Disability Status", "description": "vision difficulty"},
+    {"name": "DOUT", "topic": "Disability Status", "description": "independent-living difficulty"},
+    {"name": "DDRS", "topic": "Disability Status", "description": "self-care difficulty"},
+
+    {"name": "MIL", "topic": "Veteran Status, Period of Military Service", "description": "service status (1 active, 2 past active, 3 training only, 4 never)"},
+    {"name": "VPS", "topic": "Veteran Status, Period of Military Service", "description": "veteran period of service (Vietnam, Gulf, post-9/11, etc.; refines MIL)"},
+
+    {"name": "HICOV", "topic": "Health Insurance Coverage", "description": "any insurance (1 yes, 2 no)"},
+    {"name": "HINS1", "topic": "Health Insurance Coverage", "description": "employer-based"},
+    {"name": "HINS2", "topic": "Health Insurance Coverage", "description": "private direct-purchase (gig / self-employed signal)"},
+    {"name": "HINS3", "topic": "Health Insurance Coverage", "description": "Medicare"},
+    {"name": "HINS4", "topic": "Health Insurance Coverage", "description": "Medicaid / Medi-Cal"},
+    {"name": "HINS6", "topic": "Health Insurance Coverage", "description": "VA health care (veteran signal)"},
+    {"name": "PUBCOV", "topic": "Health Insurance Coverage", "description": "any public"},
+
+    {"name": "ESR", "topic": "Employment Status", "description": "employment status recode"},
+    {"name": "COW", "topic": "Class of Worker", "description": "class of worker (1 private for-profit, 2 nonprofit, 3-5 gov, 6-7 self-employed)"},
+    {"name": "OCCP", "topic": "Occupation", "description": "occupation (SOC-based; use occupation_soc_major operator)"},
+    {"name": "INDP", "topic": "Industry", "description": "industry (NAICS-based; use industry_naics operator)"},
+    {"name": "WKHP", "topic": "Hours Worked", "description": "usual hours worked per week"},
+    {"name": "WKW", "topic": "Weeks Worked", "description": "weeks worked in past 12 months (1 = 50-52 ... 6 = 0)"},
+    {"name": "WKL", "topic": "Employment Status", "description": "when last worked (1 within 12 mo, 2 1-5 yrs, 3 5+ yrs, 4 never)"},
+
+    {"name": "PINCP", "topic": "Income", "description": "total personal income"},
+    {"name": "PERNP", "topic": "Earnings", "description": "earnings (wages + self-employment)"},
+    {"name": "WAGP", "topic": "Earnings", "description": "wage and salary income"},
+    {"name": "SEMP", "topic": "Earnings", "description": "self-employment income"},
+    {"name": "RETP", "topic": "Income", "description": "retirement income"},
+    {"name": "SSP", "topic": "Income", "description": "Social Security income"},
+    {"name": "SSIP", "topic": "Income", "description": "Supplemental Security Income"},
+    {"name": "PAP", "topic": "Income", "description": "public assistance income"},
+    {"name": "INTP", "topic": "Income", "description": "interest, dividend, and net rental income (wealth / passive income signal)"},
+    {"name": "POVPIP", "topic": "Poverty Status", "description": "income-to-poverty ratio (501 max; 100 = at poverty line)"},
+
+    {"name": "JWTRNS", "topic": "Commuting to Work", "description": "means of transportation to work"},
+    {"name": "JWMNP", "topic": "Commuting to Work", "description": "travel time to work (minutes)"},
+    {"name": "MIG", "topic": "Migration/Residence 1 Year Ago", "description": "lived in same house 1 yr ago"},
+
+    {"name": "SAME_SEX", "topic": "Relationship", "description": "lives in a same-sex household (derived from RELSHIPP codes 23 same-sex spouse and 24 same-sex unmarried partner); see METHODOLOGY.md for derivation policy", "derived": true}
+  ],
+  "housing_vars": [
+    {"name": "SERIALNO", "description": "household serial, join key to housing record"},
+    {"name": "WGTP", "description": "housing unit weight"},
+
+    {"name": "TEN", "topic": "Tenure", "description": "tenure (1 owned w/ mortgage, 2 owned free, 3 rented, 4 occupied w/o pmt)"},
+    {"name": "HHT", "topic": "Household Type", "description": "household type"},
+    {"name": "HHL", "topic": "Language Spoken at Home and Ability to Speak English", "description": "household language"},
+    {"name": "NP", "topic": "Household Type", "description": "number of persons in household"},
+    {"name": "HUPAC", "topic": "Household Type", "description": "presence of any children under 18"},
+    {"name": "HUPAOC", "topic": "Household Type", "description": "presence of own children (categorical with age groups)"},
+    {"name": "MULTG", "topic": "Household Type", "description": "multigenerational household"},
+    {"name": "LNGI", "topic": "Language Spoken at Home and Ability to Speak English", "description": "limited-English-speaking household"},
+    {"name": "PARTNER", "topic": "Relationship", "description": "presence of unmarried partner (used to derive SAME_SEX)"},
+    {"name": "R65", "topic": "Household Type", "description": "presence of persons 65+ in household (multigen / elder-care signal)"},
+
+    {"name": "BLD", "topic": "Units in Structure", "description": "units in structure (2 = single-family detached)"},
+    {"name": "YRBLT", "topic": "Year Structure Built", "description": "year structure built (decade-start year value: 1939 = '1939 or earlier', ..., 2020 = '2020 or later')"},
+    {"name": "ACR", "topic": "Lot Size", "description": "lot size (1 = <1 acre, 2 = 1-9.99 ac, 3 = 10+ ac)"},
+    {"name": "AGS", "topic": "Agricultural Sales", "description": "agricultural sales bracket"},
+    {"name": "BDSP", "topic": "Bedrooms", "description": "bedrooms"},
+
+    {"name": "TEL", "topic": "Telephone Service Available", "description": "telephone service"},
+    {"name": "PLM", "topic": "Plumbing Facilities", "description": "complete plumbing"},
+    {"name": "HFL", "topic": "House Heating Fuel", "description": "heating fuel (2 propane, 4 oil, 6 wood = rural signals)"},
+
+    {"name": "VEH", "topic": "Vehicles Available", "description": "vehicles available"},
+
+    {"name": "HINCP", "topic": "Income", "description": "household income"},
+    {"name": "FINCP", "topic": "Income", "description": "family income"},
+    {"name": "VALP", "topic": "Value", "description": "property value (owner-occupied only)"},
+    {"name": "RNTP", "topic": "Gross Rent", "description": "monthly rent"},
+    {"name": "GRPIP", "topic": "Gross Rent", "description": "gross rent as % of household income (renter cost burden)"},
+    {"name": "MRGP", "topic": "Selected Monthly Owner Costs", "description": "first mortgage payment"},
+    {"name": "SMOCP", "topic": "Selected Monthly Owner Costs", "description": "selected monthly owner costs"},
+    {"name": "OCPIP", "topic": "Selected Monthly Owner Costs", "description": "selected monthly owner costs as % of household income (owner cost burden)"},
+    {"name": "FS", "topic": "Food Stamps/SNAP", "description": "food stamps received in last year"},
+    {"name": "WIF", "topic": "Workers in Family", "description": "workers in family"},
+
+    {"name": "ACCESS", "topic": "Computer and Internet Use", "description": "internet access at home (1 paid, 2 free, 3 none)"},
+    {"name": "BROADBND", "topic": "Computer and Internet Use", "description": "broadband subscription"},
+    {"name": "LAPTOP", "topic": "Computer and Internet Use", "description": "laptop or desktop in household"},
+    {"name": "SMARTPHONE", "topic": "Computer and Internet Use", "description": "smartphone in household"},
+
+    {"name": "MV", "topic": "Year Householder Moved Into Unit", "description": "when householder moved in"},
+
+    {"name": "HHLDRRAC1P", "topic": "Race", "description": "householder race"},
+    {"name": "HHLDRAGEP", "topic": "Age and Sex", "description": "householder age"}
+  ]
+}
