@@ -5,6 +5,9 @@ Pulls ACS PUMS records for California (2020-2024 5-year vintage) via the Census 
 joins person and household records, scores each record against the subculture library
 defined in web/lib/library.json, aggregates to PUMA, and writes JSON the Next.js app reads.
 
+# THIS MAY NOT BE TRUE. does it write json or save it to cache?? It is exposed via API to the next app.
+# It's worth thinking about tightening the scope of this utility
+
 Run:
     pip install -r requirements.txt
     python pipeline.py
@@ -19,6 +22,12 @@ Outputs (in ./data/):
     summary.json            - per-subculture member counts + secondary
                               diagnostics (threshold, gate-pass count,
                               soft total, mean fit per member)
+
+# Does it still return the pumas geojson? I don't think so?
+# Does it also still return these outputs?
+# Is it worth changing this file to export a utility instead of a function which runs with name === main.
+# I think it's good to have a function which can run in isolation and handles inputs and outputs cleanly, but it may be able to be simplified to
+# support the existing architecture better
 
 Cache: raw API responses are cached in ./cache/ so re-runs are fast. Delete cache/
 to force a fresh fetch.
@@ -95,22 +104,6 @@ VIF_INFINITY_THRESHOLD_R2: float = 1 - 1e-9
 DEFAULT_MEMBERSHIP_THRESHOLD: float = 0.5
 
 # ----------------------------------------------------------------------------
-# Parallelism. Two levels:
-#   COHORT_N_JOBS  : workers used to process cohorts in distribute_to_tracts.
-#                    -1 = all cores. Process-based (loky) backend, since each
-#                    cohort does enough CPU work to amortize the fork cost.
-#   BOOTSTRAP_N_JOBS: workers used inside _compute_bootstrap_ci. Threading
-#                    backend so we don't pay pickling on every resample.
-#
-# These compose: when cohorts run in parallel, the bootstrap inside each cohort
-# worker is auto-forced to serial to avoid core oversubscription. To maximise
-# bootstrap parallelism, set COHORT_N_JOBS=1 (cohorts serial) and raise
-# BOOTSTRAP_N_JOBS to -1.
-# ----------------------------------------------------------------------------
-COHORT_N_JOBS: int = -1
-BOOTSTRAP_N_JOBS: int = -1
-
-# ----------------------------------------------------------------------------
 # ACS marginal reliability thresholds (coefficient of variation, CV).
 #
 # CV = (MOE / 1.645) / estimate. The denominator 1.645 is the z-score for the
@@ -137,9 +130,9 @@ ACS_MOE_Z90: float = 1.645
 from pums_fields import (  # noqa: E402
     HOUSING_VARS,
     N_REPLICATE_WEIGHTS,
-    PERSON_VARS,
+    PERSON_VARS, # Do we need? If not, why
     PERSON_VARS_WITH_REPLICATES,
-    REPLICATE_WEIGHT_VARS,
+    REPLICATE_WEIGHT_VARS, # Do we need? If not not, why?
 )
 
 # Direct CSV download from the Census FTP. The API endpoint had reliability issues
@@ -233,7 +226,7 @@ def _read_pums_csv(zip_path: Path, wanted: set[str]) -> pd.DataFrame:
     return df
 
 
-def fetch_puma_list() -> list[str]:
+def fetch_puma_list() -> list[str]: # We mix _ prefixed functions with unprefixed. Is this done consistently? Should we clean up any inconsistency?
     """Get the list of CA PUMAs from the cartographic boundary file. Avoids a giant
     PUMS API probe (which would 500 on response size for state-level queries)."""
     cached = CACHE / "puma_list.json"
@@ -263,12 +256,17 @@ def _required_parquet_columns() -> set[str]:
         N_REPLICATE_WEIGHTS SDR replicate weights.
       - Every field referenced by any cohort vector in the library JSON.
         Includes derived fields like SAME_SEX, which is computed during
-        fetch_pums and persisted to the parquet.
+        fetch_pums and persisted to the parquet. 
+        # This last point could be broken out more. I think there is more thinking that could be done about "computed fields".
+        # These are an expression of queer mapping, and trying to map the invisible. But are these not recreating the *point* of the vectors?
+        # Either, I think it's worth considering if we a) Break these out more cleanly and have their use be more auditable and defensible or
+        # b) remove these, and use their values in the vectors. One consideration is does this create any speed gain? If there is a speed gain by computing these,
+        # then this could legitimise using them. It also means there would be another editorial layer, and that needs to be recognised. I am leaning towards removing
 
     PERSON_VARS / HOUSING_VARS deliberately do NOT participate. Those
     lists are a generous catalog of "what fields exist and where to
     read them from"; an entry there that no cohort currently uses is
-    legitimate (kept around so a POSTed user cohort can reference it
+    legitimate (kept around so a POSTed user cohort can reference it # Is this the best way to describe why it's "kept around"
     without forcing a parquet rebuild). The validation only fails when
     a column the running system actually depends on is missing.
     """
@@ -287,6 +285,11 @@ def fetch_pums() -> pd.DataFrame:
     The cached parquet must contain the PUMS replicate weights (PWGTP1..PWGTP80)
     for the Fay-Herriot variance estimator. If an older cache lacks them, we
     regenerate the parquet rather than silently use an incomplete cache.
+
+    # I am starting to get a little confused by the data fetching, maybe because it's spread out all over. 
+    # I think we could think about the structure and placement of functions within this file.
+    # I think the comments are very helpful though!
+    # This, after reading, is one of the most important functions. But that's only clear from reading the function
     """
     parquet_out = DATA / "pums_ca.parquet"
     if parquet_out.exists():
@@ -330,6 +333,8 @@ def fetch_pums() -> pd.DataFrame:
     #   23 = same-sex husband/wife/spouse
     #   24 = same-sex unmarried partner
     # If any person in a household has one of those codes, the household is same-sex.
+
+    # Looking at this, this really seems like a vector level decision. We can have a frontend way of grouping the required fields.
     if "RELSHIPP" in persons.columns:
         ss_mask = persons["RELSHIPP"].isin([23, 24])
         ss_serials = set(persons.loc[ss_mask, "SERIALNO"].unique())
@@ -353,6 +358,8 @@ def _fetch_ca_land_polygon():
     """Get a CA state polygon from the Census cartographic boundary state file.
     These files clip out major water bodies, so intersecting PUMAs with the
     result strips the ocean and bay slivers. Returns a shapely geometry or None.
+
+    # I see this is also implemented in the scripts. Maybe a comment saying that. I feel like the structure of the file could be better. Maybe we can consider breaking out in to smaller files.
     """
     import geopandas as gpd
 
@@ -398,11 +405,11 @@ def fetch_pumas_geojson() -> dict:
     """Fetch CA PUMA boundary, clip against the CA land polygon to remove
     water-body slivers, save as GeoJSON. Tries each PUMA URL until one succeeds.
     """
-    out = DATA / "pumas_ca.geojson"
+    out = DATA / "pumas_ca.geojson" # Should this be saved as geojson? What is this used for? Is it better to just return the values directly, and let any exporting be used in scripts 
     if out.exists():
         return json.loads(out.read_text())
 
-    extract_dir = CACHE / "puma_shp"
+    extract_dir = CACHE / "puma_shp" # Do we save the pumas_ca and puma_shp to geojson because it's faster to access? Or are we using the file system to manage state that we don't need to manage?
     extract_dir.mkdir(parents=True, exist_ok=True)
 
     last_err = None
@@ -456,6 +463,7 @@ def fetch_pumas_geojson() -> dict:
 def fetch_tract_puma_crosswalk() -> pd.DataFrame:
     """Download the Census tract → PUMA crosswalk (2020 vintage), filtered to CA.
     Returns a DataFrame with columns: tract_geoid (11-char), puma (5-char)."""
+    # What exactly is this for? Would be good to explain in a comment
     cached = CACHE / "tract_puma_crosswalk_ca.csv"
     if cached.exists():
         return pd.read_csv(cached, dtype=str)
@@ -495,6 +503,8 @@ class TractMarginal(NamedTuple):
     level. The corresponding standard error is MOE / 1.645 (see ACS_MOE_Z90).
     """
 
+    # Why is this one a class? What does that do better? The classes do seem to help break up code blocks. Im not saying we should convert to all classes.
+
     estimates: dict[str, float]
     moes: dict[str, float]
 
@@ -510,6 +520,7 @@ def _compute_tract_cv(estimate: float, moe: float) -> float | None:
 
     Reference: U.S. Census Bureau (2020) Understanding and Using American
     Community Survey Data: What All Data Users Need to Know, chapter 7.
+    # Good to state references
     """
     if estimate is None or moe is None:
         return None
@@ -541,6 +552,7 @@ def _summarize_marginal_reliability(
     classification: the published point estimates encode sampling uncertainty
     that downstream allocation steps usually ignore, and explicit disclosure
     is the minimum-bar disclosure for any defensible analysis.
+    # Are we doing disclosure here, or anything else? Is there a better way to frame this comment that refers to the literature, explains the bands, and then not be as defensive over what seems to be standard practice
     """
     cvs: list[float] = []
     n_caution = 0
@@ -574,6 +586,9 @@ def _summarize_marginal_reliability(
 def fetch_acs_tract_marginal(var: str) -> TractMarginal:
     """Fetch one ACS variable for all CA tracts via the aggregated-tables API.
     Returns {tract_geoid: float}.
+
+    # This text could be explained a little better. Also this is a really big function, and fetch makes it seem like it's simply downloading. 
+    # Also does this text need to reference more literature?
 
     The cache is skipped if the API returns an entirely-zero response — some
     detailed tables (e.g., B16001 detailed-language, B11009 same-sex partner
@@ -614,6 +629,7 @@ def fetch_acs_tract_marginal(var: str) -> TractMarginal:
         return TractMarginal(estimates=estimates, moes=moes)
 
     # Fetch estimate and MOE together in a single API call.
+    # This seems to be one of the slowest things in the entire codebase. adding a "new one of these" (i don't really understand what this does) is why making new calculations seems to be SOOOOO slow. 
     url = f"{ACS_API}?get=NAME,{var},{moe_var}&for=tract:*&in=state:06"
     print(f"[fetch] ACS tract var {var} (with MOE {moe_var})")
     r = requests.get(url, timeout=120)
@@ -674,7 +690,7 @@ def fetch_acs_tract_marginal(var: str) -> TractMarginal:
         json.dumps({k: (v if np.isfinite(v) else None) for k, v in moes.items()})
     )
 
-    # Quick reliability snapshot at fetch time (Census Bureau 2020 thresholds).
+    # Quick reliability snapshot at fetch time (Census Bureau 2020 thresholds). # What is this for? If this is for me to check out stuff in the terminal, the main way i validate the work is the map. prioritising speed of getting data to the map shows me more info. If this metric is surfaced elsewhere, remove it
     reliability = _summarize_marginal_reliability(estimates, moes, var_name=var)
     if reliability["median_cv"] is not None:
         print(
@@ -693,7 +709,7 @@ def fetch_acs_tract_marginal(var: str) -> TractMarginal:
     return TractMarginal(estimates=estimates, moes=moes)
 
 
-def fetch_tracts_geojson() -> dict:
+def fetch_tracts_geojson() -> dict: # This feels like a weird order for this to be in.
     """Fetch CA tract boundaries, clip to CA land, save as GeoJSON."""
     out = DATA / "tracts_ca.geojson"
     if out.exists():
@@ -738,7 +754,7 @@ def fetch_tracts_geojson() -> dict:
 
     geojson = json.loads(gdf.to_json())
     out.write_text(json.dumps(geojson))
-    print(f"[save] wrote {out}")
+    print(f"[save] wrote {out}") # Should this function not worry about writing, and let the script code do that
     return geojson
 
 
@@ -746,7 +762,7 @@ def parse_marginal_specs(sub: dict) -> list[str]:
     """Return [variable, ...] from a cohort YAML record.
     Supports flat list `tract_marginals: [VAR, ...]`, single `tract_marginal: VAR`,
     and the legacy weighted form `tract_marginals: [{var, weight}, ...]` (weights
-    ignored — coefficients are fit from data via NNLS+Ridge regression)."""
+    ignored — coefficients are fit from data via NNLS+Ridge regression).""" # If weights are ignored, why are they an option? If there is no client using this the weights format, we can remove it.
     if "tract_marginals" in sub and sub["tract_marginals"]:
         out = []
         for m in sub["tract_marginals"]:
@@ -769,7 +785,7 @@ def _phase1_share_blend(
     """Phase 1 fallback: weighted convex combination of normalized marginal shares
     within a PUMA. Each marginal proposes a tract distribution; we average them
     using the cohort-specified weights. Robust to zeros and missing values.
-    Closed-form equivalent of IPF on a single-axis distribution problem."""
+    Closed-form equivalent of IPF on a single-axis distribution problem.""" # This is good
     if puma_score <= 0 or not tract_geoids:
         return {}
     weight_total = sum(weights)
@@ -837,7 +853,7 @@ def _estimate_sigma2_u_prasad_rao(
 
     where m is the number of areas and p is the number of parameters.
     Reference: Prasad & Rao 1990, *JASA* 85(409), 163-171.
-    """
+    """ # Good text here. Could include what the utility of it is in context.
     m = len(y)
     p = X.shape[1]
     if m <= p:
@@ -859,7 +875,7 @@ def _compute_eblup(y, X, beta, sigma2_e, sigma2_u):
     γ_p is near 1 and the direct estimate is preserved.
 
     Returns (eblup_predictions, gamma_per_area).
-    """
+    """ # Could also explain utility in context
     synthetic = X @ beta
     direct_residual = y - synthetic
     denom = sigma2_u + sigma2_e
@@ -882,7 +898,8 @@ def _compute_conley_se(X_z, residuals, lam, puma_ids, centroids, bandwidth_km=CO
     estimator. With the NNLS non-negativity constraint, this is approximate
     for any coefficient that hit the boundary β = 0 (whose effective SE is
     degenerate); the bootstrap procedure is the rigorous companion estimate.
-    """
+    """ #Utility for this would be good to. But it's good this is cited. 
+    # These seem to be a collection of the actual methods used in the estimation analysis. maybe these are all candidates for a file in a lib folder. Just an idea.
     n, p = X_z.shape
     if len(puma_ids) != n or not centroids:
         return [float("nan")] * p
@@ -1005,7 +1022,7 @@ def _compute_vifs(Xz):
 
     For columns whose R² with the others is at or above VIF_INFINITY_THRESHOLD_R2,
     we report VIF = inf rather than computing a noisy 1/(1-R²) near machine epsilon.
-    """
+    """ # good citing
     n_features = Xz.shape[1]
     vifs = []
     for j in range(n_features):
@@ -1078,7 +1095,7 @@ def fit_area_level_model(
 
     X = np.asarray(rows, dtype=float)
     y = np.asarray(targets, dtype=float)
-    n_features = X.shape[1]
+    n_features = X.shape[1] # Do we need?
     feature_names = ["population"] + list(marginal_names)
 
     # Standardize predictors (z-score). Skip features with zero variance.
@@ -1248,7 +1265,7 @@ def fit_area_level_model(
         "bootstrap_ci_upper": boot_ci_upper,
         "bootstrap_n": n_bootstrap,
         "puma_ids": list(keep_pumas),
-    }
+    } # Let's analyse which of these metrics are useful to keep? Particularly from a model performance analysis perspective for academic text, not for the website. Also is there a performance hit to including any?
 
 
 def build_puma_centroids(puma_shp_dir: Path) -> dict[str, tuple[float, float]]:
@@ -1262,7 +1279,7 @@ def build_puma_centroids(puma_shp_dir: Path) -> dict[str, tuple[float, float]]:
     shp_files = list(puma_shp_dir.rglob("*.shp"))
     if not shp_files:
         return {}
-    gdf = gpd.read_file(shp_files[0])
+    gdf = gpd.read_file(shp_files[0]) 
     id_col = None
     for c in ["PUMACE20", "PUMACE", "PUMA20", "PUMA", "GEOID20", "GEOID"]:
         if c in gdf.columns:
@@ -1408,7 +1425,7 @@ def compute_morans_i(
     return float(morans_i), float(z), p
 
 
-def _process_one_cohort_for_tracts(
+def _process_one_cohort_for_tracts( # This is a huge function. Worth thinking about where this should be placed. Also worth thinking about improving performance.
     sub_id: str,
     marginals_list: list[dict[str, float]],
     marginal_names: list[str],
@@ -1643,162 +1660,16 @@ def _process_one_cohort_for_tracts(
     return sub_id, cohort_tract_scores, summary
 
 
-def distribute_to_tracts(
-    puma_scores: dict,
-    tract_marginals_by_cohort: dict[str, list[dict[str, float]]],
-    cohort_marginal_names: dict[str, list[str]],
-    tract_to_puma: dict,
-    tract_pop: dict[str, float],
-    spatial_weights: dict[str, list[str]] | None = None,
-    puma_score_variance: dict[str, dict[str, float]] | None = None,
-    puma_centroids: dict[str, tuple[float, float]] | None = None,
-    n_bootstrap: int = DEFAULT_N_BOOTSTRAP,
-    tract_marginal_moes_by_cohort: dict[str, list[dict[str, float]]] | None = None,
-) -> tuple[dict, dict]:
-    """Distribute PUMA-level cohort scores to tracts via area-level SAE.
+# ----------------------------------------------------------------------------
+# NOTE: `distribute_to_tracts` (the multi-cohort batch orchestrator used by
+# the old `main()`) was removed when the project shifted to live /score
+# per-cohort scoring. service.py calls `_process_one_cohort_for_tracts`
+# directly for each request. If batch processing is ever re-introduced,
+# the per-cohort function above is the building block; rebuild a
+# distribute_to_tracts on top of it. The git history has the prior
+# implementation if you need to crib parallel-dispatch boilerplate.
+# ----------------------------------------------------------------------------
 
-    Primary path: NNLS+Ridge regression with z-standardized predictors and
-    leave-one-PUMA-out CV for λ. Tract-level predictions are then raked
-    (proportionally rescaled) within each PUMA so the within-PUMA total
-    matches the PUMS-derived PUMA score (benchmarking constraint).
-
-    Fallback (when no marginals declared, fewer than 8 PUMAs, or LOOCV R²
-    below threshold): equal-weight share-blend across the available marginals,
-    or uniform within-PUMA distribution if no marginals are usable.
-
-    Parallelism: cohorts are processed in parallel via joblib (loky backend)
-    when COHORT_N_JOBS != 1. To avoid core oversubscription, the bootstrap
-    inside each cohort worker is forced to serial whenever cohorts run in
-    parallel; bootstrap parallelism only kicks in when COHORT_N_JOBS == 1.
-
-    Returns (tract_scores, model_summaries):
-      tract_scores: { tract_geoid: { sub_id: score } }
-      model_summaries: { sub_id: full diagnostics dict }
-    """
-    from collections import defaultdict
-
-    tracts_by_puma: dict[str, list[str]] = defaultdict(list)
-    for tract_geoid, puma in tract_to_puma.items():
-        tracts_by_puma[puma].append(tract_geoid)
-
-    # Collect all cohort ids.
-    sub_ids: set[str] = set()
-    for vals in puma_scores.values():
-        sub_ids.update(vals.keys())
-
-    # PUMA population from tract pop summed via crosswalk.
-    puma_pop: dict[str, float] = defaultdict(float)
-    for tract_geoid, p in tract_to_puma.items():
-        puma_pop[p] += tract_pop.get(tract_geoid, 0.0)
-
-    # Decide effective parallelism. If we're parallelizing cohorts, force
-    # bootstrap to serial within each worker; otherwise let bootstrap use
-    # whatever BOOTSTRAP_N_JOBS is configured to.
-    cohort_n_jobs_effective = COHORT_N_JOBS if len(sub_ids) > 1 else 1
-    bootstrap_n_jobs_effective = (
-        BOOTSTRAP_N_JOBS if cohort_n_jobs_effective == 1 else 1
-    )
-
-    # Build the per-cohort task arguments once.
-    sorted_sub_ids = sorted(sub_ids)
-    cohort_inputs = []
-    for sub_id in sorted_sub_ids:
-        cohort_puma_scores = {
-            p: vals.get(sub_id, 0.0) for p, vals in puma_scores.items()
-        }
-        cohort_puma_variance: dict[str, float] | None = None
-        if puma_score_variance is not None:
-            cohort_puma_variance = {
-                p: puma_score_variance.get(p, {}).get(sub_id, 0.0)
-                for p in puma_score_variance
-            }
-        cohort_marginal_moes = (
-            tract_marginal_moes_by_cohort.get(sub_id, [])
-            if tract_marginal_moes_by_cohort is not None
-            else []
-        )
-        cohort_inputs.append(
-            (
-                sub_id,
-                tract_marginals_by_cohort.get(sub_id, []),
-                cohort_marginal_names.get(sub_id, []),
-                cohort_puma_scores,
-                cohort_puma_variance,
-                cohort_marginal_moes,
-            )
-        )
-
-    # Dispatch cohort workers.
-    if cohort_n_jobs_effective == 1:
-        cohort_results = [
-            _process_one_cohort_for_tracts(
-                sub_id,
-                marginals_list,
-                names,
-                tracts_by_puma,
-                tract_to_puma,
-                puma_pop,
-                tract_pop,
-                cohort_puma_scores,
-                cohort_puma_variance,
-                spatial_weights,
-                puma_centroids,
-                n_bootstrap,
-                bootstrap_n_jobs_effective,
-                marginal_moes,
-            )
-            for (
-                sub_id,
-                marginals_list,
-                names,
-                cohort_puma_scores,
-                cohort_puma_variance,
-                marginal_moes,
-            ) in cohort_inputs
-        ]
-    else:
-        print(
-            f"[parallel] dispatching {len(cohort_inputs)} cohorts to "
-            f"{cohort_n_jobs_effective} workers (loky); bootstrap forced serial"
-        )
-        cohort_results = joblib.Parallel(
-            n_jobs=cohort_n_jobs_effective, backend="loky", verbose=5
-        )(
-            joblib.delayed(_process_one_cohort_for_tracts)(
-                sub_id,
-                marginals_list,
-                names,
-                tracts_by_puma,
-                tract_to_puma,
-                puma_pop,
-                tract_pop,
-                cohort_puma_scores,
-                cohort_puma_variance,
-                spatial_weights,
-                puma_centroids,
-                n_bootstrap,
-                bootstrap_n_jobs_effective,
-                marginal_moes,
-            )
-            for (
-                sub_id,
-                marginals_list,
-                names,
-                cohort_puma_scores,
-                cohort_puma_variance,
-                marginal_moes,
-            ) in cohort_inputs
-        )
-
-    # Merge per-cohort outputs into the global tract dict and summaries.
-    out: dict[str, dict[str, float]] = {}
-    summaries: dict[str, dict] = {}
-    for sub_id, cohort_tract_scores, summary in cohort_results:
-        summaries[sub_id] = summary
-        for t, score in cohort_tract_scores.items():
-            out.setdefault(t, {})[sub_id] = score
-
-    return out, summaries
 
 
 # ----------------------------------------------------------------------------
@@ -1895,7 +1766,7 @@ def score_subculture(df: pd.DataFrame, sub: dict) -> tuple[pd.Series, pd.Series]
 
     Membership is then derived elsewhere via `compute_membership()`, which
     applies the cohort's threshold τ to the fit score. See METHODOLOGY.md
-    "Scoring" for the membership rule.
+    "Scoring" for the membership rule. #Is there an academic basis for the methods here?
     """
     gate = pd.Series(True, index=df.index)
     score = pd.Series(0.0, index=df.index)
@@ -1924,7 +1795,7 @@ def compute_membership(
     condition passes (gate = True) AND (b) the soft fit score is at or
     above threshold. Returned as float (0.0 / 1.0) for compatibility with
     downstream PWGTP-weighted aggregation.
-    """
+    """ # and here
     return (gate & (fit_score >= threshold)).astype(float)
 
 
@@ -1993,268 +1864,36 @@ def aggregate_to_puma_variance(
 
 
 # ----------------------------------------------------------------------------
-# Main
+# CLI entrypoint
+#
+# The live /score endpoint is the only consumer of the rest of this module;
+# main() exists solely to materialise the PUMS parquet on disk. Run this
+# once on a fresh checkout, or after adding fields to pums_fields.json,
+# so the FastAPI service has the parquet to load on first boot.
+#
+# No batch-mode cohort scoring lives here anymore — the project shifted
+# to per-cohort scoring at request time (service.score_one_cohort).
 # ----------------------------------------------------------------------------
 
+
 def main() -> None:
-    DATA.mkdir(exist_ok=True)
-    CACHE.mkdir(exist_ok=True)
-
-    # The library is a flat JSON list of cohort definitions; no settings
-    # block (the pipeline-wide settings that used to live there were
-    # decorative or constants by this point — default_threshold is the
-    # only one that actually mattered and it lives in DEFAULT_MEMBERSHIP_THRESHOLD).
-    subcultures = json.loads(CONFIG.read_text())
-    default_threshold = DEFAULT_MEMBERSHIP_THRESHOLD
-    print(f"[config] loaded {len(subcultures)} subcultures (default τ={default_threshold:.2f})")
-
-    # Geometry rendering (PUMA shapefile extraction + clipped boundary
-    # geojson) is owned by scripts/render_geometry.py now. main() assumes
-    # the shapefile already lives in cache/puma_shp/; run the script if
-    # you're on a fresh checkout. The service-startup path in service.py
-    # keeps a defensive fallback that calls fetch_pumas_geojson when the
-    # shapefile is missing, so the function stays in this module.
-
+    """Build the PUMS parquet artifact from upstream Census CSVs."""
+    print("[main] building PUMS parquet...")
     df = fetch_pums()
-    print(f"[scoring] {len(df):,} records, {df['PUMA'].nunique()} PUMAs")
-
-    # Per-cohort scoring. For each subculture we keep three artifacts:
-    #   gates[sub]     : Series[bool], True where every required condition passes
-    #   fit_scores[sub]: Series[float], soft similarity in [0, 1]
-    #   members[sub]   : Series[float], 1.0 if record is a cohort member, else 0
-    # `members` is the primary downstream estimand: a binary indicator that
-    # turns into a population count when weighted by PWGTP. `fit_scores` is
-    # retained as a within-cohort secondary diagnostic (mean fit per member,
-    # distribution of fit, threshold sensitivity). See METHODOLOGY.md.
-    gates: dict[str, pd.Series] = {}
-    fit_scores: dict[str, pd.Series] = {}
-    members: dict[str, pd.Series] = {}
-    thresholds: dict[str, float] = {}
-
-    for sub in subcultures:
-        sub_id = sub["id"]
-        gate, fit_score = score_subculture(df, sub)
-        threshold = float(sub.get("threshold", default_threshold))
-        member = compute_membership(gate, fit_score, threshold)
-
-        gates[sub_id] = gate
-        fit_scores[sub_id] = fit_score
-        members[sub_id] = member
-        thresholds[sub_id] = threshold
-
-        gate_pass = int(gate.sum())
-        member_count = float((member * df["PWGTP"]).sum())
-        members_among_passers = int(member.sum())
-        # Mean fit among members (only meaningful when there are members).
-        if members_among_passers > 0:
-            mean_fit = float(((fit_score * member) * df["PWGTP"]).sum() / member_count) if member_count > 0 else 0.0
-        else:
-            mean_fit = 0.0
-        print(
-            f"[score] {sub_id:25s}: τ={threshold:.2f}  "
-            f"gate_pass={gate_pass:>7,}  members(records)={members_among_passers:>7,}  "
-            f"members(weighted)={member_count:>11,.0f}  mean_fit={mean_fit:.3f}"
-        )
-
-    # PUMA-level aggregation. The primary aggregate is the weighted count of
-    # cohort members per PUMA. We also aggregate the soft fit score for the
-    # secondary `mean_fit_per_member` diagnostic.
-    puma_scores = aggregate_to_puma(df, members)
-    out_scores = DATA / "scores.json"
-    out_scores.write_text(json.dumps(puma_scores, indent=2))
-    print(f"[save] {out_scores}")
-
-    # PUMS sampling variance per PUMA per cohort, via successive-difference
-    # replication on PWGTP1..PWGTP80. With binary membership indicators this
-    # is the SDR variance of a population total (count), the canonical use
-    # case. Used as σ²_e_p in the Fay-Herriot model.
-    print("[variance] computing PUMS sampling variance via SDR (80 replicates)...")
-    puma_score_variance = aggregate_to_puma_variance(df, members)
-    if puma_score_variance:
-        out_variance = DATA / "scores_variance.json"
-        out_variance.write_text(json.dumps(puma_score_variance, indent=2))
-        print(f"[save] {out_variance}")
-    else:
-        print("[variance] replicate weights not available; FH will degenerate to OLS")
-
-    # Sanity totals + secondary diagnostics. The primary per-cohort number is
-    # the weighted count of members; soft-total and mean-fit-among-members are
-    # secondary diagnostics retained for sensitivity analysis and threshold
-    # tuning.
-    soft_totals = {
-        sub_id: float((fit_scores[sub_id] * df["PWGTP"]).sum())
-        for sub_id in fit_scores
-    }
-    member_counts = {
-        sub_id: float((members[sub_id] * df["PWGTP"]).sum())
-        for sub_id in members
-    }
-    gate_pass_counts = {
-        sub_id: float((gates[sub_id].astype(float) * df["PWGTP"]).sum())
-        for sub_id in gates
-    }
-    mean_fit_per_member = {
-        sub_id: (
-            float(((fit_scores[sub_id] * members[sub_id]) * df["PWGTP"]).sum() / member_counts[sub_id])
-            if member_counts[sub_id] > 0
-            else 0.0
-        )
-        for sub_id in members
-    }
-
-    summary = {
-        "total_pums_records": len(df),
-        "total_weighted_population": float((df["PWGTP"]).sum()),
-        "puma_count": int(df["PUMA"].nunique()),
-        # Primary estimand: weighted count of cohort members per cohort.
-        "per_subculture_member_count": member_counts,
-        # Secondary diagnostics, retained per cohort for transparency and
-        # threshold-sensitivity analysis.
-        "per_subculture_diagnostics": {
-            sub_id: {
-                "threshold": thresholds[sub_id],
-                "gate_pass_weighted": gate_pass_counts[sub_id],
-                "soft_total_weighted": soft_totals[sub_id],
-                "mean_fit_per_member": mean_fit_per_member[sub_id],
-            }
-            for sub_id in members
-        },
-    }
-    out_summary = DATA / "summary.json"
-    out_summary.write_text(json.dumps(summary, indent=2))
-    print(f"[save] {out_summary}")
-    print("\n[done] California weighted population:", f"{summary['total_weighted_population']:,.0f}")
-    print("[done] Sanity check: should be roughly 39M.")
-
-    # ------------------------------------------------------------------
-    # Small-area estimation: distribute PUMA scores to tracts.
-    # ------------------------------------------------------------------
-    print("\n[tract] starting small-area estimation...")
-    crosswalk = fetch_tract_puma_crosswalk()
-    tract_to_puma = dict(zip(crosswalk["tract_geoid"], crosswalk["puma"]))
-
-    # Tract population — used as the size term in the regression.
-    print("[tract] fetching tract population (B01003_001E)...")
-    tract_pop = fetch_acs_tract_marginal("B01003_001E").estimates
-
-    # For each cohort, pull every declared tract marginal. We keep two
-    # parallel lists per cohort: point estimates (used for the regression
-    # and tract allocation, as before) and MOEs (used for per-marginal
-    # reliability disclosure under Census Bureau 2020 CV thresholds).
-    tract_marginals_by_cohort: dict[str, list[dict[str, float]]] = {}
-    tract_marginal_moes_by_cohort: dict[str, list[dict[str, float]]] = {}
-    cohort_marginal_names: dict[str, list[str]] = {}
-    for sub in subcultures:
-        specs = parse_marginal_specs(sub)
-        if not specs:
-            print(f"[tract] {sub['id']}: no tract marginals declared; will fall back to uniform")
-            tract_marginals_by_cohort[sub["id"]] = []
-            tract_marginal_moes_by_cohort[sub["id"]] = []
-            cohort_marginal_names[sub["id"]] = []
-            continue
-        margs: list[dict[str, float]] = []
-        marg_moes: list[dict[str, float]] = []
-        names: list[str] = []
-        for var in specs:
-            try:
-                fetched = fetch_acs_tract_marginal(var)
-                margs.append(fetched.estimates)
-                marg_moes.append(fetched.moes)
-                names.append(var)
-            except Exception as e:
-                print(f"[tract] {sub['id']}: failed to fetch {var} ({e}); skipping this marginal")
-        tract_marginals_by_cohort[sub["id"]] = margs
-        tract_marginal_moes_by_cohort[sub["id"]] = marg_moes
-        cohort_marginal_names[sub["id"]] = names
-
-    # Build PUMA queen-contiguity spatial weights for Moran's I diagnostics.
-    print("[tract] building PUMA spatial weights (queen contiguity)...")
-    try:
-        spatial_weights = build_puma_queen_neighbors(CACHE / "puma_shp")
-        print(f"[tract] spatial weights: {len(spatial_weights)} PUMAs")
-    except Exception as e:
-        print(f"[warn] spatial weights failed ({e}); Moran's I will be unavailable")
-        spatial_weights = None
-
-    # PUMA centroids for Conley spatial HAC standard errors.
-    print("[tract] building PUMA centroids for Conley SE...")
-    try:
-        puma_centroids = build_puma_centroids(CACHE / "puma_shp")
-        print(f"[tract] centroids: {len(puma_centroids)} PUMAs")
-    except Exception as e:
-        print(f"[warn] centroids failed ({e}); Conley SE will be unavailable")
-        puma_centroids = None
-
-    tract_scores, model_summaries = distribute_to_tracts(
-        puma_scores,
-        tract_marginals_by_cohort,
-        cohort_marginal_names,
-        tract_to_puma,
-        tract_pop,
-        spatial_weights=spatial_weights,
-        puma_score_variance=puma_score_variance if puma_score_variance else None,
-        puma_centroids=puma_centroids if puma_centroids else None,
-        n_bootstrap=DEFAULT_N_BOOTSTRAP,
-        tract_marginal_moes_by_cohort=tract_marginal_moes_by_cohort,
+    print(
+        f"[main] done. parquet has {len(df):,} records, "
+        f"{df['PUMA'].nunique()} PUMAs, {len(df.columns)} columns."
     )
-    out_tract_scores = DATA / "tract_scores.json"
-    out_tract_scores.write_text(json.dumps(tract_scores))
-    print(f"[save] {out_tract_scores} ({len(tract_scores):,} tracts)")
-
-    # Attach scoring-stage secondary diagnostics (threshold, gate-pass count,
-    # soft total, mean fit per member) to each cohort's model summary so the
-    # full membership-rule audit lives in one file alongside the regression
-    # diagnostics.
-    for sub_id, summary in model_summaries.items():
-        summary["membership"] = {
-            "threshold": thresholds.get(sub_id, default_threshold),
-            "default_threshold": default_threshold,
-            "weighted_gate_pass": gate_pass_counts.get(sub_id, 0.0),
-            "weighted_member_count": member_counts.get(sub_id, 0.0),
-            "weighted_soft_total": soft_totals.get(sub_id, 0.0),
-            "mean_fit_per_member": mean_fit_per_member.get(sub_id, 0.0),
-        }
-
-    out_models = DATA / "model_summaries.json"
-    out_models.write_text(json.dumps(model_summaries, indent=2))
-    print(f"[save] {out_models}")
-    for sub_id, summary in model_summaries.items():
-        method = summary.get("method", "unknown")
-        if method == "ridge_nnls":
-            morans = summary.get("morans_i_residual")
-            morans_str = f" Moran_I={morans:+.3f}" if morans is not None else ""
-            cond = summary.get("condition_number")
-            cond_str = f" cond={cond:.1f}" if cond is not None else ""
-            max_vif = max(
-                (v for v in summary.get("vif", []) if v != float("inf")),
-                default=float("nan"),
-            )
-            fh = summary.get("fay_herriot")
-            fh_str = (
-                f" FH(σ²_u={fh['sigma2_u']:.0f},γ_med={fh['median_gamma']:.2f})"
-                if fh
-                else ""
-            )
-            print(
-                f"[model] {sub_id:25s} ridge_nnls "
-                f"R²={summary['r_squared']:.3f} "
-                f"LOOCV_R²={summary['loocv_r_squared']:+.3f} "
-                f"λ={summary['lambda']:g} max_VIF={max_vif:.1f}"
-                f"{cond_str}{morans_str}{fh_str}"
-            )
-        else:
-            print(
-                f"[model] {sub_id:25s} share-blend "
-                f"({summary.get('fallback_reason', '')})"
-            )
-
-    # Tract geometry is rendered by scripts/render_geometry.py and lives
-    # in web/public/data/. Pipeline.py does not regenerate it.
 
 
 if __name__ == "__main__":
     try:
         main()
     except requests.HTTPError as e:
-        print(f"[error] HTTP {e.response.status_code}: {e.response.text[:200]}", file=sys.stderr)
+        print(
+            f"[error] HTTP {e.response.status_code}: "
+            f"{e.response.text[:200]}",
+            file=sys.stderr,
+        )
         sys.exit(1)
+
