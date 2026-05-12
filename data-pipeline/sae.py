@@ -244,7 +244,32 @@ def fetch_acs_tract_marginal(var: str) -> TractMarginal:
     print(f"[fetch] ACS tract var {var} (with MOE {moe_var})")
     r = requests.get(url, timeout=120)
     r.raise_for_status()
-    rows = r.json()
+
+    # The Census API occasionally returns 200 with a non-JSON body (HTML
+    # error page, plain-text "error: variable does not exist", empty
+    # response). Treat that as the same class of "this marginal cannot
+    # be fetched" failure as the all-zeros suppression case below:
+    # return an empty TractMarginal, do not cache, and let the
+    # downstream model fall through to its share-blend fallback.
+    try:
+        rows = r.json()
+    except ValueError as e:
+        body_preview = r.text[:200].replace("\n", " ")
+        print(
+            f"[warn] {var}: API returned 200 but non-JSON body "
+            f"({type(e).__name__}: {e}). Body preview: {body_preview!r}. "
+            "This usually means the variable code is not published at the "
+            "tract level for this ACS vintage. Not caching."
+        )
+        return TractMarginal(estimates={}, moes={})
+
+    if not rows or not isinstance(rows, list):
+        print(
+            f"[warn] {var}: API returned unexpected JSON shape ({type(rows).__name__}). "
+            "Not caching."
+        )
+        return TractMarginal(estimates={}, moes={})
+
     header, *data = rows
     state_idx = header.index("state")
     county_idx = header.index("county")

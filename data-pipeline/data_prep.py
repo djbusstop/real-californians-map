@@ -157,31 +157,20 @@ def _required_parquet_columns() -> set[str]:
     """Set of columns the cached parquet must contain to be considered
     valid for the running system.
 
-    Composed from two sources:
-      - Hardcoded plumbing: SERIALNO (person/housing join), PUMA (group
-        key), PWGTP (person weight), WGTP (housing weight), and the
-        N_REPLICATE_WEIGHTS SDR replicate weights.
-      - Every field referenced by any cohort vector in the library JSON,
-        including the derived SAME_SEX flag (see fetch_pums and
-        METHODOLOGY.md "Field derivation policy" for the project's
-        commitment that SAME_SEX is its single documented derivation
-        exception; future household-to-person traits should be expressed
-        via a generic `household_has` operator rather than as additional
-        derived columns).
-
-    PERSON_VARS / HOUSING_VARS deliberately do NOT participate. Those
-    lists are a generous eager-load catalog: fields are loaded into the
-    parquet up front so a POSTed cohort that names a field can score
-    without forcing a parquet rebuild. An entry there that no cohort
-    currently uses is fine. The validation only fails when a column
-    the running system actually depends on is missing from the parquet.
+    The parquet must have every catalog field (PERSON_VARS + HOUSING_VARS),
+    the derived SAME_SEX flag (METHODOLOGY.md "Field derivation policy"),
+    the join/group/weight plumbing, and the N_REPLICATE_WEIGHTS SDR
+    replicate weights. server.py's request validator builds its
+    KNOWN_FIELDS set from PERSON_VARS + HOUSING_VARS + SAME_SEX, so a
+    user-authored cohort that names any of those fields must find them
+    in the loaded DataFrame; if the YAML catalog grows but the parquet
+    predates the addition, the validation fails here and fetch_pums
+    rebuilds.
     """
-    cols: set[str] = {"SERIALNO", "PUMA", "PWGTP", "WGTP"}
+    cols: set[str] = {"SERIALNO", "PUMA", "PWGTP", "WGTP", "SAME_SEX"}
     cols.update(f"PWGTP{i}" for i in range(1, N_REPLICATE_WEIGHTS + 1))
-    library = json.loads(CONFIG.read_text())
-    for cohort in library:
-        for cond in cohort.get("vector", []):
-            cols.add(cond["field"])
+    cols.update(PERSON_VARS)
+    cols.update(HOUSING_VARS)
     return cols
 
 
