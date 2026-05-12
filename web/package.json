@@ -5,8 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
-    "sync-data": "mkdir -p public/data && cp ../data-pipeline/data/tracts_ca.geojson public/data/"
+    "start": "next start"
   },
   "dependencies": {
     "@turf/bbox": "^7.1.0",

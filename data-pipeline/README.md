@@ -1,6 +1,10 @@
 # Real Californians: data pipeline
 
-Fetches ACS PUMS for California, scores each record against the cohorts defined in `../web/lib/library.json`, distributes scores to census tracts via Fay-Herriot small-area estimation, and outputs JSON the Next.js app reads.
+The Python side of the project. Three responsibilities:
+
+1. **Build the PUMS parquet** (`data_prep.py`). Downloads CA PUMS 5-Year person + household CSVs, joins them on `SERIALNO`, derives the `SAME_SEX` household flag, and persists a single parquet to `cache/pums_ca.parquet`.
+2. **Score cohorts on demand** (`server.py` + `service.py` + `scoring.py` + `sae.py`). FastAPI service that takes a cohort definition over HTTP and returns tract-level scores plus the raw statistical diagnostics from the model. Responses are content-hash cached on disk.
+3. **Generate clipped tract geometry** (`scripts/generate_clipped_tracts.py`). One-off script that fetches the TIGER tract shapefile and the cartographic boundary state file, intersects tracts with California's land polygon, and writes the result to `web/public/data/tracts_ca.geojson` for the frontend to render.
 
 For the methodology (cohort definitions, scoring, small-area model, diagnostics, limitations), see [METHODOLOGY.md](../METHODOLOGY.md) at the project root.
 
@@ -15,27 +19,42 @@ pip install -r requirements.txt
 
 Python 3.10+ is required.
 
-## Run
+## First-run build
 
 ```sh
-python pipeline.py
+python data_prep.py
+python scripts/generate_clipped_tracts.py
 ```
 
-First run downloads the CA PUMS 5-Year sample directly from the Census FTP (~400MB persons + ~120MB housing), the TIGER tract shapefile, and ACS 5-Year tract marginals. Total first-run time: 10-20 minutes depending on connection. Subsequent runs read the cached parquet and complete the scoring + small-area pass in well under a minute.
+`data_prep.py` downloads the CA PUMS 5-Year sample directly from the Census FTP (~400 MB person + ~120 MB housing) and writes the joined parquet. Total first run: 10-20 minutes depending on connection. Subsequent invocations validate the cached parquet column set; if a new field has been added to `pums_fields.yaml` and is referenced by a library cohort, the parquet is regenerated.
 
-The 5-Year sample is ~5% of California (vs. ~1% for the 1-Year), so cohort counts are far more stable and Fay-Herriot fold failures effectively disappear at the cohort sizes we care about.
+The 5-Year sample is ~5% of California (vs. ~1% for the 1-Year), so cohort counts are stable and Fay-Herriot fold failures effectively disappear at the cohort sizes we care about.
 
-## Outputs
+`scripts/generate_clipped_tracts.py` writes directly to `web/public/data/tracts_ca.geojson`. Run it whenever you want fresh tract boundaries (e.g. a new TIGER vintage).
 
-In `./data/`:
+## Running the scoring service
 
-- `pums_ca.parquet` — merged person + household records with the 80 replicate weights. Reusable for any subsequent analysis.
-- `tracts_ca.geojson` — TIGER census tract boundaries for California.
-- `tract_scores.json` — `{ tract_geoid: { cohort_id: weighted_member_count } }`. The Next.js app reads this. Under the threshold-based membership rule (see `../web/lib/library.json` settings and METHODOLOGY.md), each value is the weighted count of cohort members allocated to that tract.
-- `model_summaries.json` — per-cohort Fay-Herriot diagnostics: σ²_u, σ²_e, EBLUP shrinkage γ, ridge λ, LOOCV R², bootstrap CI half-widths, Conley HAC SEs, Moran's I on residuals, VIFs. Also carries scoring-stage secondary diagnostics: threshold τ, weighted gate-pass count, weighted soft total, mean fit per member.
-- `puma_scores.json` — intermediate PUMA-level cohort member counts prior to tract distribution.
+```sh
+uvicorn server:app --host 0.0.0.0 --port 8000
+```
 
-`tract_scores.json` and `tracts_ca.geojson` are the two files the web app needs; `npm run sync-data` from `web/` copies them into `web/public/data/`.
+Startup loads the PUMS DataFrame, the tract↔PUMA crosswalk, PUMA spatial weights and centroids, and the tract population marginal. With warm caches this is ~5-15 seconds; cold-start (first run after build) is dominated by the PUMS DataFrame load.
+
+The endpoint contract lives in [`docs/cohort_api_spec.md`](../docs/cohort_api_spec.md).
+
+## Cache layout
+
+All derived artifacts live in `data-pipeline/cache/`:
+
+- `pums_ca.parquet` — merged person + household records with the 80 replicate weights, plus the derived `SAME_SEX` flag. Reusable for any subsequent analysis.
+- `pums_persons_ca.zip`, `pums_housing_ca.zip` — raw Census FTP downloads, kept so re-parsing doesn't re-download.
+- `puma_shp/`, `state_shp/`, `tract_shp/` — extracted TIGER and cartographic-boundary shapefiles.
+- `acs_tract_*.json` — per-variable ACS tract marginal cache, fetched by `sae.fetch_acs_tract_marginal` on first use and reused across cohorts within a process.
+- `tract_puma_crosswalk_ca.csv` — Census tract-to-PUMA crosswalk, filtered to CA.
+
+The cohort response cache lives in `cohort_cache/response_<hash>.json` (one file per unique cohort definition).
+
+The parquet validates against the full current `PERSON_VARS + HOUSING_VARS + PWGTP1..80` column list on every load; if any column the library or pipeline expects is missing, the parquet is regenerated. To force a full rebuild, delete `cache/pums_ca.parquet` (or the entire `cache/` folder).
 
 ## Editing cohorts
 
@@ -44,8 +63,9 @@ In `./data/`:
 - `id`, `name`, `vibe` — display metadata
 - `vector` — list of conditions, each with `field`, `op`, `value`, `weight`, optional `required: true`
 - `tract_marginals` — list of ACS tract-level table codes the small-area model uses as the marginal for this cohort
+- `threshold` — optional override for the per-cohort membership threshold (default 0.5)
 
-To add or modify a cohort, edit the YAML and re-run `python pipeline.py`. The cached PUMS parquet is reused; only the scoring + small-area pass re-runs.
+The frontend POSTs each cohort to the running scoring service. No re-run of `data_prep.py` is needed after editing the library; only `pums_fields.yaml` changes (adding a new field referenced by a cohort) trigger a parquet rebuild on next service start.
 
 `../docs/fields.md` is the reference for every PUMS variable currently loaded into the DataFrame.
 
@@ -63,30 +83,36 @@ To add or modify a cohort, edit the YAML and re-run `python pipeline.py`. The ca
 
 `required: true` on a condition makes it a hard filter (record scores 0 if not satisfied). Use this for identity-defining gates (e.g., `SAME_SEX = 1` for the queer cohort). Soft signals belong without `required` — they nudge the score for character flavor without excluding records.
 
-## Validating results
+## Module layout
 
-After the run, sanity-check `model_summaries.json`:
-
-- `puma_n_records` should be ~265 (CA PUMA count) for any cohort that scores broadly.
-- `tract_n_records` should be ~9,000 (CA tract count).
-- Per-cohort `weighted_total` should be a plausible fraction of CA's ~39M population.
-- `loocv_r2` ideally > 0.05; lower indicates the small-area model is doing little better than the cohort mean.
-- `loocv_failed_splits` should be 0 with the 5-Year sample. Non-zero means some folds collapsed to the y_mean fallback (see methodology).
-- `morans_i_p_value` near 0 with positive `morans_i` indicates residual spatial structure the model did not capture — informational, not necessarily a problem.
-
-If a cohort's `weighted_total` is suspiciously near zero, the proxy is probably broken (likely a code mapping issue or a hard gate that no record satisfies). The pipeline now warns when a YAML field is not present in the PUMS columns and when an ACS tract marginal call returns all zeros.
-
-## Caching
-
-All derived artifacts live in `data-pipeline/cache/` (raw Census downloads, extracted shapefiles, ACS marginal JSONs, and the joined `pums_ca.parquet`). The parquet validates against the full current `PERSON_VARS + HOUSING_VARS + PWGTP1..80` column list on every run; if any column the library or pipeline expects is missing, the cache is regenerated.
-
-To force a full rebuild, delete `data-pipeline/cache/pums_ca.parquet` (or the entire `cache/` folder for a from-scratch rebuild).
+```
+data_prep.py            PUMS fetch + parquet build + PUMA/tract geometry
+                        helpers + tract↔PUMA crosswalk + field catalog loader
+scoring.py              Per-record scoring (operators, gates, fit), threshold-
+                        based membership, PUMA aggregation with SDR variance
+sae.py                  Small-area estimation: ACS marginal fetching,
+                        ridge+NNLS, Fay-Herriot EBLUP, Conley spatial HAC,
+                        bootstrap CIs, Moran's I, MOE-weighted within-PUMA
+                        raking
+service.py              Orchestrator: ServerState (long-lived process state),
+                        canonical_cohort_hash, score_one_cohort
+server.py               FastAPI HTTP layer
+pums_fields.yaml        PUMS field catalog with inline-comment descriptors
+scripts/
+  generate_clipped_tracts.py    Tract GeoJSON for the frontend
+tests/
+  smoke_latency.py      End-to-end /score latency check
+```
 
 ## Where this fits in the project
 
 ```
-[ Census PUMS + ACS ]  →  [ pipeline.py ]  →  [ data/tract_scores.json   ]  →  [ Next.js app ]
-                                              [ data/tracts_ca.geojson   ]
+[ Census PUMS + ACS ]  →  [ data_prep.py builds parquet ]
+[ TIGER + CB tracts ]  →  [ scripts/generate_clipped_tracts.py → web/public/data/tracts_ca.geojson ]
+                                            ↓
+                          [ server.py / service.py / scoring.py / sae.py ]
+                                            ↓ POST /score per cohort
+                                  [ Next.js app renders dots ]
 ```
 
-The pipeline is the only place that touches raw PUMS. The Next.js app only ever reads the small JSON outputs. This separation keeps the runtime fast and the data layer reproducible.
+`data_prep.py` is the only place that touches raw PUMS. The FastAPI service is the only place that runs the SAE. The Next.js app only ever consumes the `/score` response and the clipped tract GeoJSON.

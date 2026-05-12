@@ -29,7 +29,6 @@ import pandas as pd
 # raking. service.py orchestrates them per /score request.
 from data_prep import (
     CACHE,
-    DEFAULT_MEMBERSHIP_THRESHOLD,
     build_puma_centroids,
     build_puma_queen_neighbors,
     fetch_pums,
@@ -37,10 +36,10 @@ from data_prep import (
     load_puma_shapefile,
 )
 from scoring import (
+    DEFAULT_MEMBERSHIP_THRESHOLD,
     aggregate_to_puma,
     aggregate_to_puma_variance,
     compute_membership,
-    parse_marginal_specs,
     score_subculture,
 )
 from sae import (
@@ -53,8 +52,7 @@ from sae import (
 # Reduced bootstrap iteration count for interactive scoring. The batch
 # pipeline uses DEFAULT_N_BOOTSTRAP = 1000 for analysis; the interactive
 # service uses fewer to hit the sub-minute latency target. Point estimates
-# and tract allocation are unchanged; coefficient CIs widen proportionally,
-# which the LLM does not surface anyway (see cohort_api_spec.md §3.3).
+# and tract allocation are unchanged; coefficient CIs widen proportionally.
 INTERACTIVE_N_BOOTSTRAP = 200
 
 # Tract population variable used as the size term in every cohort's
@@ -165,6 +163,20 @@ class ServerState:
 # ---------------------------------------------------------------------------
 
 
+def parse_marginal_specs(sub: dict) -> list[str]:
+    """Return the list of ACS variable codes from a cohort definition.
+
+    Supports two input shapes:
+      tract_marginals: [VAR, ...]   - the canonical form
+      tract_marginal: VAR           - singular convenience for one marginal
+    """
+    if "tract_marginals" in sub and sub["tract_marginals"]:
+        return [m for m in sub["tract_marginals"] if isinstance(m, str)]
+    if "tract_marginal" in sub and sub["tract_marginal"]:
+        return [sub["tract_marginal"]]
+    return []
+
+
 # Operators whose `value` is a list and whose semantics are
 # order-insensitive (membership in a set). We sort the value list before
 # hashing so two definitions that differ only in list order hash the same.
@@ -261,27 +273,6 @@ def compute_gini(values: list[float]) -> float:
     weighted_sum = sum((i + 1) * v for i, v in enumerate(vals))
     g = (2 * weighted_sum) / (n * s) - (n + 1) / n
     return max(0.0, min(1.0, g))
-
-
-def _format_marginal_reliability(reliability_list: list[dict]) -> str:
-    """Human-readable summary of per-marginal CV diagnostics. Used by the
-    LLM in conversational prose. Empty string if no reliability data
-    (cohort had no tract marginals)."""
-    if not reliability_list:
-        return ""
-    parts = []
-    for r in reliability_list:
-        var = r.get("variable", "?")
-        n_eval = r.get("n_tracts_evaluated", 0)
-        n_caution = r.get("n_caution", 0)
-        n_unrel = r.get("n_unreliable", 0)
-        if n_eval == 0:
-            parts.append(f"{var}: no tracts evaluated")
-            continue
-        pct_caution = round(100 * n_caution / n_eval)
-        pct_unrel = round(100 * n_unrel / n_eval)
-        parts.append(f"{var}: {pct_caution}% caution, {pct_unrel}% unreliable")
-    return "; ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -411,9 +402,6 @@ def score_one_cohort(state: ServerState, cohort_def: dict) -> dict:
         "feature_coefs": [
             _round_or_none(c, 4) for c in summary.get("coefs", [])
         ],
-        "marginal_reliability_summary": _format_marginal_reliability(
-            summary.get("marginal_reliability", [])
-        ),
     }
 
     # Compose the tract scores object in the same nested shape the existing

@@ -16,8 +16,6 @@ lived in pipeline.py; this module is purely a reorganization.
 from __future__ import annotations
 
 import json
-import math
-import time
 import warnings
 from typing import NamedTuple
 
@@ -810,8 +808,8 @@ def _fit_area_level_model(
     # per-cohort model_summaries used by the methodology paper. None
     # are expensive to compute relative to the regression itself, so
     # there's no performance win in pruning. Editorial decisions about
-    # which to *display* (in the frontend, in the LLM coaching, in the
-    # paper) belong above this layer, not here.
+    # which to *display* (in the frontend, in the paper) belong above
+    # this layer, not here.
 
 
 def _compute_morans_i(

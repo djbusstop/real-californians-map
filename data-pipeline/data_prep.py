@@ -13,23 +13,11 @@ Owns the data-prep layer of the project:
   - Library reader. The cohort library lives in
     web/lib/library.json; the path constant lives here for the rest
     of the stack to consume.
-  - Constants. CACHE / ROOT paths, the Census URLs,
-    DEFAULT_MEMBERSHIP_THRESHOLD.
+  - PUMS field catalog. PERSON_VARS, HOUSING_VARS, N_REPLICATE_WEIGHTS
+    derived from pums_fields.yaml at import time.
   - main(). Slim CLI entrypoint that calls fetch_pums() to
     materialise the parquet. Run it once on a fresh checkout, or
-    after adding fields to pums_fields.json.
-
-The other modules in this folder:
-
-  scoring.py    Per-record scoring (operators, gates, fit), threshold-
-                based membership, PUMA aggregation with SDR variance.
-  sae.py        Small-area estimation: ACS marginal fetching, ridge+NNLS,
-                Fay-Herriot EBLUP, Conley spatial HAC, bootstrap CIs,
-                Moran's I, MOE-weighted within-PUMA raking.
-  service.py    Orchestrator: ServerState (long-lived process state)
-                and score_one_cohort (the per-/score-request pipeline).
-  server.py     FastAPI HTTP layer.
-  pums_fields.py  PUMS field catalog loader (reads web/lib/pums_fields.json).
+    after adding fields to pums_fields.yaml.
 
 Run:
     pip install -r requirements.txt
@@ -45,15 +33,13 @@ from __future__ import annotations
 import json
 import os
 import sys
-import warnings
 import zipfile
 from io import BytesIO
 from pathlib import Path
-from typing import Any, NamedTuple
 
-import numpy as np
 import pandas as pd
 import requests
+import yaml
 from tqdm import tqdm
 
 ROOT = Path(__file__).parent
@@ -70,32 +56,29 @@ CONFIG = ROOT.parent / "web" / "lib" / "library.json"
 API_KEY = os.environ.get("CENSUS_API_KEY")  # optional
 
 # ----------------------------------------------------------------------------
-# Constants. SAE constants (lambda grid, Conley bandwidth, bootstrap
-# settings, etc.) live in sae.py.
+# Constants. Scoring constants (membership threshold) live in scoring.py;
+# SAE constants (lambda grid, Conley bandwidth, bootstrap settings) live
+# in sae.py.
 # ----------------------------------------------------------------------------
 
-# Default membership threshold τ. A PUMS record counts as a cohort member iff
-# every `required: true` condition in the trait vector passes AND the soft
-# similarity score is at or above this threshold. Override per cohort by
-# adding `threshold:` to the cohort entry in web/lib/library.json. See
-# METHODOLOGY.md "Scoring" for rationale.
-DEFAULT_MEMBERSHIP_THRESHOLD: float = 0.5
+# PUMS field catalog. Loaded from pums_fields.yaml at import time. The lists
+# are deliberately generous: a field in the YAML gets loaded into the parquet
+# eagerly so a POSTed cohort can reference it without forcing a rebuild.
+# Derived fields (currently only SAME_SEX) are computed in fetch_pums and are
+# not enumerated in the YAML; see METHODOLOGY.md "Field derivation policy".
+_PUMS_FIELDS_YAML = ROOT / "pums_fields.yaml"
+with _PUMS_FIELDS_YAML.open() as _f:
+    _CATALOG = yaml.safe_load(_f)
 
-
-# Variable lists for the API pull. Kept in pums_fields.py because the
-# catalog is large and grows; pipeline.py focuses on logic. Both lists
-# are deliberately generous: a field listed here gets loaded into the
-# parquet eagerly so a POSTed cohort can reference it without forcing
-# a rebuild. See docs/fields.md for the full PUMS catalog with codes.
-from pums_fields import (  # noqa: E402
-    HOUSING_VARS,
-    N_REPLICATE_WEIGHTS,
-    # PERSON_VARS is re-exported for server.py's request-validation
-    # allowlist; HOUSING_VARS is consumed both there and inside this
-    # module by _required_parquet_columns().
-    PERSON_VARS,
-    PERSON_VARS_WITH_REPLICATES,
-)
+# Replicate-weight count drives both the SDR variance formula
+# Var = (4/N) * Σ_r (θ̂_r − θ̂)² and the column-name derivation below.
+N_REPLICATE_WEIGHTS: int = _CATALOG["n_replicate_weights"]
+REPLICATE_WEIGHT_VARS: list[str] = [
+    f"PWGTP{i}" for i in range(1, N_REPLICATE_WEIGHTS + 1)
+]
+PERSON_VARS: list[str] = list(_CATALOG["person_vars"])
+HOUSING_VARS: list[str] = list(_CATALOG["housing_vars"])
+PERSON_VARS_WITH_REPLICATES: list[str] = PERSON_VARS + REPLICATE_WEIGHT_VARS
 
 # Direct CSV download from the Census FTP. The API endpoint had reliability issues
 # (intermittent 500s on small queries, can't pin down the cause), so we pull the
@@ -170,30 +153,6 @@ def _read_pums_csv(zip_path: Path, wanted: set[str]) -> pd.DataFrame:
 # Naming convention in this module: a leading underscore marks an
 # internal helper (private to data_prep.py), no underscore marks a
 # function imported elsewhere in the stack (service.py, scripts, etc.).
-def _fetch_puma_list() -> list[str]:
-    """Get the list of CA PUMAs from the TIGER shapefile. Avoids a giant
-    PUMS API probe (which would 500 on response size for state-level queries).
-
-    Currently unused at runtime — the live service derives the PUMA set
-    from the parquet itself. Kept as a helper for ad-hoc exploration.
-    """
-    cached = CACHE / "puma_list.json"
-    if cached.exists():
-        return json.loads(cached.read_text())
-    gdf = load_puma_shapefile()
-    keys = ["PUMACE20", "PUMA20", "PUMACE10", "PUMACE", "PUMA"]
-    pumas: set[str] = set()
-    for _, row in gdf.iterrows():
-        for k in keys:
-            val = row.get(k)
-            if val is not None and str(val):
-                pumas.add(str(val))
-                break
-    pumas_list = sorted(pumas)
-    cached.write_text(json.dumps(pumas_list))
-    return pumas_list
-
-
 def _required_parquet_columns() -> set[str]:
     """Set of columns the cached parquet must contain to be considered
     valid for the running system.
@@ -489,7 +448,7 @@ def build_puma_queen_neighbors(puma_shp_dir: Path) -> dict[str, list[str]]:
 def main() -> None:
     """Build the PUMS parquet artifact from upstream Census CSVs.
 
-    Run on a fresh checkout, or after adding fields to pums_fields.json,
+    Run on a fresh checkout, or after adding fields to pums_fields.yaml,
     so the FastAPI service has the parquet to load on first boot.
     """
     print("[main] building PUMS parquet...")

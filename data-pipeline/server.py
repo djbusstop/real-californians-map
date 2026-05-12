@@ -158,7 +158,6 @@ class CohortStats(BaseModel):
     fay_herriot_median_gamma: Optional[float]
     feature_names: List[str]
     feature_coefs: List[Optional[float]]
-    marginal_reliability_summary: str
 
 
 class CohortResponse(BaseModel):
@@ -201,8 +200,7 @@ app = FastAPI(
     title="California Culture Map cohort scoring API",
     description=(
         "Single-cohort scoring service. POST a cohort definition and "
-        "receive tract-level scores plus the raw statistical diagnostics "
-        "the LLM uses for interpretive conversation."
+        "receive tract-level scores plus the raw statistical diagnostics."
     ),
     version="0.1.0",
     lifespan=lifespan,

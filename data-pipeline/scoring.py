@@ -16,41 +16,19 @@ pipeline.py; this module is purely a reorganization.
 
 from __future__ import annotations
 
-import warnings
-from typing import Any
-
-import numpy as np
 import pandas as pd
 
-# Replicate weights live with the field catalog in pums_fields.py;
+# Replicate-weight count lives with the field catalog loader in data_prep;
 # imported here for aggregate_to_puma_variance's SDR computation.
-from pums_fields import N_REPLICATE_WEIGHTS
-
-# Single source of truth for the membership threshold lives in
-# pipeline.py (the data-prep / main entrypoint module). Re-exported
-# here so callers that want to pull it alongside the scoring
-# functions can `from scoring import DEFAULT_MEMBERSHIP_THRESHOLD`.
-from data_prep import DEFAULT_MEMBERSHIP_THRESHOLD  # noqa: F401
+from data_prep import N_REPLICATE_WEIGHTS
 
 
-def parse_marginal_specs(sub: dict) -> list[str]:
-    """Return the list of ACS variable codes from a cohort definition.
-
-    Supports two input shapes:
-      tract_marginals: [VAR, ...]   - the canonical form
-      tract_marginal: VAR           - singular convenience for one marginal
-
-    Older versions of the project accepted a weighted dict form
-    `tract_marginals: [{var, weight}, ...]`; coefficients are now fit from
-    data by ridge+NNLS so explicit weights have no effect. No current
-    cohort in library.json uses the dict form, so support for it has
-    been removed.
-    """
-    if "tract_marginals" in sub and sub["tract_marginals"]:
-        return [m for m in sub["tract_marginals"] if isinstance(m, str)]
-    if "tract_marginal" in sub and sub["tract_marginal"]:
-        return [sub["tract_marginal"]]
-    return []
+# Default membership threshold τ. A PUMS record counts as a cohort member iff
+# every `required: true` condition in the trait vector passes AND the soft
+# similarity score is at or above this threshold. Override per cohort by
+# adding `threshold:` to the cohort entry in web/lib/library.json. See
+# METHODOLOGY.md "Scoring" for rationale.
+DEFAULT_MEMBERSHIP_THRESHOLD: float = 0.5
 
 
 # Track unknown fields seen during scoring so we warn once per field per run

@@ -3,7 +3,7 @@
 // CohortBuilder
 //
 // Modal form for authoring a single user-defined cohort and rendering
-// it on the map. Replaces the LLM chat flow. UX shape:
+// it on the map. UX shape:
 //
 //   - "+ new cohort" button below the legend opens the modal.
 //   - Modal has a title, a vibe, and a set of quick controls covering
