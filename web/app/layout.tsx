@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Where Real Californians Live",
+  title: "California Subculture Map",
   description: "This isn't your grandma's census data map.",
 };
 
