@@ -18,15 +18,8 @@
 
 import library from "@/lib/library.json";
 import { COHORT_API_BASE } from "@/lib/constants";
+import type { Cohort } from "@/lib/types";
 import MapView from "@/components/MapView";
-
-export interface Cohort {
-  id: string;
-  name: string;
-  color: string;
-  tract_scores: Record<string, Record<string, number>>;
-  stats: Record<string, unknown>;
-}
 
 async function scoreLibraryCohort(
   cohort: (typeof library)[number],

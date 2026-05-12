@@ -9,7 +9,6 @@
     "sync-data": "mkdir -p public/data && cp ../data-pipeline/data/tracts_ca.geojson public/data/"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.32.1",
     "@turf/bbox": "^7.1.0",
     "@turf/boolean-point-in-polygon": "^7.1.0",
     "@turf/helpers": "^7.1.0",
