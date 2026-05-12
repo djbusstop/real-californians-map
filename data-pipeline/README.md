@@ -78,9 +78,9 @@ If a cohort's `weighted_total` is suspiciously near zero, the proxy is probably 
 
 ## Caching
 
-The pipeline cache lives in `data-pipeline/cache/` (raw downloads) and `data-pipeline/data/` (derived parquet + outputs). The `pums_ca.parquet` cache validates against the full current `PERSON_VARS + HOUSING_VARS + PWGTP1..80` column list on every run; if any column the YAML or pipeline expects is missing, the cache is regenerated.
+All derived artifacts live in `data-pipeline/cache/` (raw Census downloads, extracted shapefiles, ACS marginal JSONs, and the joined `pums_ca.parquet`). The parquet validates against the full current `PERSON_VARS + HOUSING_VARS + PWGTP1..80` column list on every run; if any column the library or pipeline expects is missing, the cache is regenerated.
 
-To force a full rebuild, delete `data-pipeline/data/pums_ca.parquet` and the relevant files in `data-pipeline/cache/`.
+To force a full rebuild, delete `data-pipeline/cache/pums_ca.parquet` (or the entire `cache/` folder for a from-scratch rebuild).
 
 ## Where this fits in the project
 

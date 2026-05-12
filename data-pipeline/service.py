@@ -23,20 +23,18 @@ from typing import Any
 
 import pandas as pd
 
-# Data-prep (PUMS fetch, parquet build, geometry, crosswalk) lives in
-# pipeline.py. Per-record scoring + PUMA aggregation lives in
-# scoring.py. The statistical small-area-estimation machinery
-# (marginal fetching, ridge+NNLS, FH+EBLUP, Conley, bootstrap, Moran,
-# raking) lives in sae.py. service.py is a thin orchestrator that
-# wires them together per /score request.
+# data_prep: PUMS fetch + parquet build + PUMA geometry + crosswalk.
+# scoring: per-record scoring + PUMA aggregation.
+# sae: marginal fetch, ridge+NNLS, FH+EBLUP, Conley, bootstrap, Moran,
+# raking. service.py orchestrates them per /score request.
 from data_prep import (
     CACHE,
     DEFAULT_MEMBERSHIP_THRESHOLD,
     build_puma_centroids,
     build_puma_queen_neighbors,
     fetch_pums,
-    fetch_pumas_geojson,
     fetch_tract_puma_crosswalk,
+    load_puma_shapefile,
 )
 from scoring import (
     aggregate_to_puma,
@@ -103,19 +101,12 @@ class ServerState:
         print("[service] loading server state...")
         t0 = time.time()
 
-        # PUMA shapefiles are needed by build_puma_queen_neighbors and
-        # build_puma_centroids below. The shapefiles live in cache/puma_shp/
-        # and are extracted as a side effect of fetch_pumas_geojson(). If
-        # they are already on disk, skip the fetch entirely; the request
-        # to the TIGER server can hang for long minutes on a slow socket
-        # (the underlying requests.get only enforces a per-read timeout,
-        # not a total timeout, so a server that dribbles bytes never trips
-        # the 120s ceiling).
-        shp_dir = CACHE / "puma_shp"
-        if shp_dir.exists() and any(shp_dir.glob("*.shp")):
-            print(f"[service] PUMA shapefiles cached at {shp_dir}; skipping TIGER fetch")
-        else:
-            fetch_pumas_geojson()
+        # PUMA shapefiles under cache/puma_shp/ are read by
+        # build_puma_queen_neighbors and build_puma_centroids below.
+        # load_puma_shapefile() is self-guarding: it skips the TIGER
+        # fetch if the shapefile is already extracted, and downloads
+        # otherwise. We don't use the returned GeoDataFrame here.
+        load_puma_shapefile()
 
         df = fetch_pums()
         print(

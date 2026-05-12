@@ -6,19 +6,18 @@ Owns the data-prep layer of the project:
     household records for California, ACS 2019-2023 5-Year vintage)
     are downloaded once, joined on SERIALNO, augmented with the
     derived SAME_SEX household flag, and persisted as a single parquet
-    artifact (data/pums_ca.parquet, ~210 MB, ~1.85M person records).
+    artifact (cache/pums_ca.parquet, ~210 MB, ~1.85M person records).
   - Geometry helpers. PUMA and tract shapefile readers, the
     tract→PUMA crosswalk, PUMA queen-contiguity neighbours (for
     Moran's I), and PUMA centroids (for Conley spatial HAC).
   - Library reader. The cohort library lives in
     web/lib/library.json; the path constant lives here for the rest
     of the stack to consume.
-  - Constants. CACHE / DATA / ROOT paths, the Census URLs,
+  - Constants. CACHE / ROOT paths, the Census URLs,
     DEFAULT_MEMBERSHIP_THRESHOLD.
   - main(). Slim CLI entrypoint that calls fetch_pums() to
     materialise the parquet. Run it once on a fresh checkout, or
-    after adding fields to pums_fields.json. No batch cohort scoring
-    here; that moved to per-cohort live scoring via service.score_one_cohort.
+    after adding fields to pums_fields.json.
 
 The other modules in this folder:
 
@@ -58,7 +57,6 @@ import requests
 from tqdm import tqdm
 
 ROOT = Path(__file__).parent
-DATA = ROOT / "data"
 CACHE = ROOT / "cache"
 # Cohort library lives in the web app's lib/ directory. This is a
 # deliberate monorepo choice: the frontend ships the canonical list of
@@ -72,12 +70,8 @@ CONFIG = ROOT.parent / "web" / "lib" / "library.json"
 API_KEY = os.environ.get("CENSUS_API_KEY")  # optional
 
 # ----------------------------------------------------------------------------
-# Methodology constants.
-#
-# Statistical / SAE constants (lambda grid, LOOCV threshold, Conley bandwidth,
-# bootstrap settings, VIF threshold, ACS CV reliability bands) live in sae.py
-# alongside the functions that use them. Pipeline.py owns only the data-prep
-# and scoring constants below.
+# Constants. SAE constants (lambda grid, Conley bandwidth, bootstrap
+# settings, etc.) live in sae.py.
 # ----------------------------------------------------------------------------
 
 # Default membership threshold τ. A PUMS record counts as a cohort member iff
@@ -122,23 +116,6 @@ PUMA_GEOJSON_URLS = [
     "https://www2.census.gov/geo/tiger/TIGER2023/PUMA/tl_2023_06_puma20.zip",
     "https://www2.census.gov/geo/tiger/TIGER2022/PUMA/tl_2022_06_puma20.zip",
     "https://www2.census.gov/geo/tiger/GENZ2022/shp/cb_2022_06_puma20_500k.zip",
-]
-
-# State cartographic boundary candidates. CB files exclude major water bodies
-# (Pacific, SF Bay, Salton Sea, etc.), so intersecting our PUMAs with the CA
-# polygon clips off the ocean and bay slivers that come with TIGER/Line PUMAs.
-STATE_CB_URLS = [
-    "https://www2.census.gov/geo/tiger/GENZ2023/shp/cb_2023_us_state_500k.zip",
-    "https://www2.census.gov/geo/tiger/GENZ2022/shp/cb_2022_us_state_500k.zip",
-    "https://www2.census.gov/geo/tiger/GENZ2021/shp/cb_2021_us_state_500k.zip",
-    "https://www2.census.gov/geo/tiger/GENZ2018/shp/cb_2018_us_state_500k.zip",
-]
-
-# Tract boundary candidates (TIGER/Line, CA, 2020-vintage tracts).
-TRACT_GEOJSON_URLS = [
-    "https://www2.census.gov/geo/tiger/TIGER2024/TRACT/tl_2024_06_tract.zip",
-    "https://www2.census.gov/geo/tiger/TIGER2023/TRACT/tl_2023_06_tract.zip",
-    "https://www2.census.gov/geo/tiger/TIGER2022/TRACT/tl_2022_06_tract.zip",
 ]
 
 # Tract → PUMA crosswalk (2020 vintage).
@@ -193,24 +170,24 @@ def _read_pums_csv(zip_path: Path, wanted: set[str]) -> pd.DataFrame:
 # Naming convention in this module: a leading underscore marks an
 # internal helper (private to data_prep.py), no underscore marks a
 # function imported elsewhere in the stack (service.py, scripts, etc.).
-# A few helpers (fetch_puma_list, fetch_tracts_geojson) are unprefixed
-# because they were exported in earlier iterations of the codebase even
-# though no current consumer imports them; left as-is to keep diffs
-# tight, but they could move to underscore-prefixed in a future pass.
-def fetch_puma_list() -> list[str]:
-    """Get the list of CA PUMAs from the cartographic boundary file. Avoids a giant
-    PUMS API probe (which would 500 on response size for state-level queries)."""
+def _fetch_puma_list() -> list[str]:
+    """Get the list of CA PUMAs from the TIGER shapefile. Avoids a giant
+    PUMS API probe (which would 500 on response size for state-level queries).
+
+    Currently unused at runtime — the live service derives the PUMA set
+    from the parquet itself. Kept as a helper for ad-hoc exploration.
+    """
     cached = CACHE / "puma_list.json"
     if cached.exists():
         return json.loads(cached.read_text())
-    geo = fetch_pumas_geojson()
+    gdf = load_puma_shapefile()
     keys = ["PUMACE20", "PUMA20", "PUMACE10", "PUMACE", "PUMA"]
     pumas: set[str] = set()
-    for feat in geo["features"]:
-        props = feat.get("properties", {})
+    for _, row in gdf.iterrows():
         for k in keys:
-            if k in props and props[k]:
-                pumas.add(str(props[k]))
+            val = row.get(k)
+            if val is not None and str(val):
+                pumas.add(str(val))
                 break
     pumas_list = sorted(pumas)
     cached.write_text(json.dumps(pumas_list))
@@ -258,14 +235,12 @@ def fetch_pums() -> pd.DataFrame:
 
     # The fetching surface in this module is laid out roughly as:
     #   - PUMS microdata: _download, _read_pums_csv, fetch_pums (this fn)
-    #   - Geometry / boundaries: _fetch_ca_land_polygon,
-    #     fetch_pumas_geojson, fetch_tracts_geojson, fetch_tract_puma_crosswalk
-    #   - PUMA spatial structures (consumed by SAE diagnostics):
-    #     build_puma_centroids, build_puma_queen_neighbors
-    # Each block is separated by a section-comment header below.
+    #   - PUMA geometry: load_puma_shapefile, build_puma_centroids,
+    #     build_puma_queen_neighbors
+    #   - Tract→PUMA crosswalk: fetch_tract_puma_crosswalk
     # This, after reading, is one of the most important functions. But that's only clear from reading the function
     """
-    parquet_out = DATA / "pums_ca.parquet"
+    parquet_out = CACHE / "pums_ca.parquet"
     if parquet_out.exists():
         print(f"[cache] loading {parquet_out}")
         df = pd.read_parquet(parquet_out)
@@ -322,130 +297,52 @@ def fetch_pums() -> pd.DataFrame:
     df = persons.merge(housing, on="SERIALNO", how="left", suffixes=("", "_hh"))
     print(f"[merge] {len(df):,} joined records")
 
-    DATA.mkdir(exist_ok=True)
+    CACHE.mkdir(exist_ok=True)
     df.to_parquet(parquet_out)
     print(f"[save] wrote {parquet_out}")
     return df
 
 
-def _fetch_ca_land_polygon():
-    """Get a CA state polygon from the Census cartographic boundary state file.
-    These files clip out major water bodies, so intersecting PUMAs with the
-    result strips the ocean and bay slivers. Returns a shapely geometry or None.
 
-    # Geometry rendering (the GeoJSON for the frontend's tract layer)
-    # lives in scripts/render_geometry.py. This function is the
-    # data-prep side of that pipeline: it ensures the underlying
-    # shapefiles are on disk and returns the boundary structures the
-    # rest of the service needs (centroids, queen neighbours). Two
-    # places, two distinct responsibilities — one for the service's
-    # runtime needs, one for the static asset shipped to the browser.
+
+def load_puma_shapefile():
+    """Download and extract the CA PUMA shapefile if needed, then return
+    an EPSG:4326 GeoDataFrame.
+
+    The shapefile under cache/puma_shp/ is what build_puma_centroids
+    and build_puma_queen_neighbors read at service startup, so the
+    extract is on the scoring path's critical resource list. Tries
+    each PUMA URL until one succeeds; skips the network if the
+    shapefile is already extracted.
     """
-    import geopandas as gpd
-
-    last_err = None
-    for url in STATE_CB_URLS:
-        try:
-            print(f"[clip] trying state CB file: {url}")
-            r = requests.get(url, timeout=120)
-            r.raise_for_status()
-            z = zipfile.ZipFile(BytesIO(r.content))
-            extract = CACHE / "state_shp"
-            extract.mkdir(parents=True, exist_ok=True)
-            z.extractall(extract)
-            shp = next(extract.glob("*.shp"))
-            states = gpd.read_file(shp).to_crs(epsg=4326)
-            # Field names vary by vintage; try a couple.
-            ca = None
-            for col in ("STUSPS", "STATEFP", "STATE_NAME", "NAME"):
-                if col not in states.columns:
-                    continue
-                if col == "STUSPS":
-                    sub = states[states[col] == "CA"]
-                elif col == "STATEFP":
-                    sub = states[states[col] == "06"]
-                else:
-                    sub = states[states[col] == "California"]
-                if not sub.empty:
-                    ca = sub
-                    break
-            if ca is None or ca.empty:
-                raise RuntimeError("CA not found in state boundary file")
-            print(f"[clip] loaded CA polygon from {url}")
-            return ca.geometry.iloc[0]
-        except Exception as e:
-            last_err = e
-            print(f"[clip] failed ({type(e).__name__}: {e}); trying next")
-            continue
-    print(f"[warn] all state CB URLs failed; clipping skipped. Last error: {last_err}")
-    return None
-
-
-def fetch_pumas_geojson() -> dict:
-    """Fetch CA PUMA boundary, clip against the CA land polygon to remove
-    water-body slivers, save as GeoJSON. Tries each PUMA URL until one succeeds.
-    """
-    # The pumas_ca.geojson written below is a legacy disk artifact: no
-    # current code path reads it (the live service uses the in-memory
-    # dict returned from this function, and the frontend renders from
-    # tracts_ca.geojson produced by scripts/render_geometry.py). Kept
-    # for now because removing the write is a behaviour change worth
-    # making deliberately; flagged so the next pass can decide.
-    out = DATA / "pumas_ca.geojson"
-    if out.exists():
-        return json.loads(out.read_text())
-
-    # The PUMA shapefile is extracted to disk because geopandas reads
-    # shapefiles by path, and downstream `build_puma_centroids` and
-    # `build_puma_queen_neighbors` both consume that directory. The
-    # extract is a real artifact (binary shapefile), not just a cache
-    # of computed values — we can't trivially recompute it without the
-    # original ZIP.
     extract_dir = CACHE / "puma_shp"
     extract_dir.mkdir(parents=True, exist_ok=True)
 
-    last_err = None
-    for url in PUMA_GEOJSON_URLS:
-        print(f"[fetch] trying {url}")
-        try:
-            r = requests.get(url, timeout=120)
-            r.raise_for_status()
-            z = zipfile.ZipFile(BytesIO(r.content))
-            z.extractall(extract_dir)
-            print(f"[fetch] succeeded: {url}")
-            break
-        except Exception as e:
-            last_err = e
-            print(f"[fetch] failed ({type(e).__name__}: {e}); trying next")
-            continue
-    else:
-        raise RuntimeError(
-            f"All PUMA boundary URLs failed. Last error: {last_err}\n"
-            "Find the right URL at https://www2.census.gov/geo/tiger/ and update PUMA_GEOJSON_URLS."
-        )
+    if not any(extract_dir.glob("*.shp")):
+        last_err = None
+        for url in PUMA_GEOJSON_URLS:
+            print(f"[fetch] trying {url}")
+            try:
+                r = requests.get(url, timeout=120)
+                r.raise_for_status()
+                z = zipfile.ZipFile(BytesIO(r.content))
+                z.extractall(extract_dir)
+                print(f"[fetch] succeeded: {url}")
+                break
+            except Exception as e:
+                last_err = e
+                print(f"[fetch] failed ({type(e).__name__}: {e}); trying next")
+                continue
+        else:
+            raise RuntimeError(
+                f"All PUMA boundary URLs failed. Last error: {last_err}\n"
+                "Find the right URL at https://www2.census.gov/geo/tiger/ "
+                "and update PUMA_GEOJSON_URLS."
+            )
 
     import geopandas as gpd
     shp = next(extract_dir.glob("*.shp"))
-    gdf = gpd.read_file(shp).to_crs(epsg=4326)
-
-    # Clip out water by intersecting with CA land polygon.
-    ca_land = _fetch_ca_land_polygon()
-    if ca_land is not None:
-        try:
-            before = gdf.geometry.area.sum()
-            gdf["geometry"] = gdf.geometry.intersection(ca_land)
-            after = gdf.geometry.area.sum()
-            shrink = 100 * (1 - after / before) if before else 0
-            print(f"[clip] PUMAs clipped to CA land; total area shrank {shrink:.1f}%")
-            # Drop any that became empty (fully in water — shouldn't happen for CA).
-            gdf = gdf[~gdf.geometry.is_empty].reset_index(drop=True)
-        except Exception as e:
-            print(f"[warn] clip failed ({e}); using unclipped PUMAs")
-
-    geojson = json.loads(gdf.to_json())
-    out.write_text(json.dumps(geojson))
-    print(f"[save] wrote {out}")
-    return geojson
+    return gpd.read_file(shp).to_crs(epsg=4326)
 
 
 # ----------------------------------------------------------------------------
@@ -488,61 +385,6 @@ def fetch_tract_puma_crosswalk() -> pd.DataFrame:
     df.to_csv(cached, index=False)
     print(f"[fetch] {len(df):,} CA tract→PUMA mappings")
     return df
-
-
-# Note on ordering: fetch_tracts_geojson lives here below the
-# small-area-estimation header rather than alongside fetch_pumas_geojson
-# because it's primarily consumed by scripts/render_geometry.py (which
-# bakes the frontend-served GeoJSON), not by the live service. The
-# service path uses build_puma_centroids and build_puma_queen_neighbors
-# below, which read PUMA shapefiles directly.
-def fetch_tracts_geojson() -> dict:
-    """Fetch CA tract boundaries, clip to CA land, save as GeoJSON."""
-    out = DATA / "tracts_ca.geojson"
-    if out.exists():
-        return json.loads(out.read_text())
-
-    extract_dir = CACHE / "tract_shp"
-    extract_dir.mkdir(parents=True, exist_ok=True)
-
-    last_err = None
-    for url in TRACT_GEOJSON_URLS:
-        print(f"[fetch] trying {url}")
-        try:
-            r = requests.get(url, timeout=300)
-            r.raise_for_status()
-            z = zipfile.ZipFile(BytesIO(r.content))
-            z.extractall(extract_dir)
-            print(f"[fetch] succeeded: {url}")
-            break
-        except Exception as e:
-            last_err = e
-            print(f"[fetch] failed ({type(e).__name__}: {e}); trying next")
-            continue
-    else:
-        raise RuntimeError(f"All tract URLs failed: {last_err}")
-
-    import geopandas as gpd
-    shp = next(extract_dir.glob("*.shp"))
-    gdf = gpd.read_file(shp).to_crs(epsg=4326)
-    print(f"[fetch] {len(gdf):,} CA tracts")
-
-    ca_land = _fetch_ca_land_polygon()
-    if ca_land is not None:
-        try:
-            before = gdf.geometry.area.sum()
-            gdf["geometry"] = gdf.geometry.intersection(ca_land)
-            after = gdf.geometry.area.sum()
-            shrink = 100 * (1 - after / before) if before else 0
-            print(f"[clip] tracts clipped to CA land; total area shrank {shrink:.1f}%")
-            gdf = gdf[~gdf.geometry.is_empty].reset_index(drop=True)
-        except Exception as e:
-            print(f"[warn] tract clip failed ({e}); using unclipped tracts")
-
-    geojson = json.loads(gdf.to_json())
-    out.write_text(json.dumps(geojson))
-    print(f"[save] wrote {out}") # Should this function not worry about writing, and let the script code do that
-    return geojson
 
 
 def build_puma_centroids(puma_shp_dir: Path) -> dict[str, tuple[float, float]]:
@@ -638,33 +480,18 @@ def build_puma_queen_neighbors(puma_shp_dir: Path) -> dict[str, list[str]]:
 
 
 
-# ----------------------------------------------------------------------------
-# NOTE: `distribute_to_tracts` (the multi-cohort batch orchestrator used by
-# the old `main()`) was removed when the project shifted to live /score
-# per-cohort scoring. service.py calls `_process_one_cohort_for_tracts`
-# directly for each request. If batch processing is ever re-introduced,
-# the per-cohort function above is the building block; rebuild a
-# distribute_to_tracts on top of it. The git history has the prior
-# implementation if you need to crib parallel-dispatch boilerplate.
-# ----------------------------------------------------------------------------
-
-
 
 # ----------------------------------------------------------------------------
 # CLI entrypoint
-#
-# The live /score endpoint is the only consumer of the rest of this module;
-# main() exists solely to materialise the PUMS parquet on disk. Run this
-# once on a fresh checkout, or after adding fields to pums_fields.json,
-# so the FastAPI service has the parquet to load on first boot.
-#
-# No batch-mode cohort scoring lives here anymore — the project shifted
-# to per-cohort scoring at request time (service.score_one_cohort).
 # ----------------------------------------------------------------------------
 
 
 def main() -> None:
-    """Build the PUMS parquet artifact from upstream Census CSVs."""
+    """Build the PUMS parquet artifact from upstream Census CSVs.
+
+    Run on a fresh checkout, or after adding fields to pums_fields.json,
+    so the FastAPI service has the parquet to load on first boot.
+    """
     print("[main] building PUMS parquet...")
     df = fetch_pums()
     print(
