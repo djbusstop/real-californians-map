@@ -129,95 +129,18 @@ CENSUS_CV_UNRELIABLE_THRESHOLD: float = 0.40
 ACS_MOE_Z90: float = 1.645
 
 
-# ----------------------------------------------------------------------------
-# Variable lists for the API pull. Keep these aligned with web/lib/library.json.
-# Person-record variables (acs5/pums "person" file).
-PERSON_VARS = [
-    "PUMA",       # 5-digit PUMA code (2020 vintage uses PUMA20 in some places; API field is PUMA)
-    "ST",         # state FIPS (always 06 here)
-    "PWGTP",      # person weight (main estimate)
-    "SERIALNO",   # household serial, for join to household record
-    "AGEP",       # age
-    "SEX",        # sex
-    "SCHL",       # educational attainment
-    "RAC1P",      # race (recoded; pulled for diagnostic only, not used in scoring)
-    "HISP",       # Hispanic origin (diagnostic only)
-    "NATIVITY",   # 1 native, 2 foreign-born
-    "LANP",       # language spoken at home (specific code)
-    "LANX",       # speaks non-English at home flag
-    "ENG",        # English proficiency for non-native speakers (1 very well .. 4 not at all)
-    "POBP",       # place of birth
-    "PINCP",      # personal income
-    "ESR",        # employment status recode
-    "OCCP",       # occupation (SOC-based code)
-    "INDP",       # industry (NAICS-based code)
-    "COW",        # class of worker
-    "MAR",        # marital status
-    "RELSHIPP",   # relationship to householder (used to derive SAME_SEX)
-    "JWTRNS",     # means of transportation to work (commute mode)
-    "WKHP",       # usual hours worked per week
-    "PAP",        # public assistance income (welfare signal)
-    "POVPIP",     # income-to-poverty ratio (501 max; 100 = at poverty line)
-    "DIS",        # disability status (1 with, 2 without)
-    "WAGP",       # wage and salary income
-    "MIG",        # lived in same house 1 year ago (1 yes, 2 same county diff house, 3 diff county same state, 4 diff state, 5 abroad)
-    "FER",        # gave birth in last 12 months (1 yes, 2 no; only women 15-50)
-    "SCH",        # school enrollment (1 no, 2 public, 3 private)
-    "MIL",        # military service status (1 active, 2 past active, 3 training only, 4 never)
-    "SSP",        # Social Security income
-    "SSIP",       # Supplemental Security Income
-    "DPHY",       # ambulatory (mobility) difficulty (1 yes, 2 no)
-    "DREM",       # cognitive difficulty incl. mental health (1 yes, 2 no)
-    "DEAR",       # hearing difficulty (1 yes, 2 no)
-    "DEYE",       # vision difficulty (1 yes, 2 no)
-    "DOUT",       # independent living difficulty (1 yes, 2 no)
-    "DDRS",       # self-care difficulty (1 yes, 2 no)
-    "PUBCOV",     # any public health insurance (1 yes, 2 no)
-    "HINS1",      # employer-based health insurance (1 yes, 2 no)
-    "WKL",        # when last worked (1 within 12 mo, 2 1-5 yrs ago, 3 5+ yrs ago, 4 never)
-]
-
-# PUMS replicate weights (PWGTP1..PWGTP80) for successive-difference replication
-# (SDR) variance estimation. With these we can compute the sampling variance of
-# any weighted estimate via Var(θ̂) = (4/80) · Σ_r (θ̂_r − θ̂)², per the Census
-# methodology described in Wolter 2007, *Introduction to Variance Estimation*,
-# 2nd ed., Springer. Used by the Fay-Herriot small-area model.
-N_REPLICATE_WEIGHTS = 80
-REPLICATE_WEIGHT_VARS = [f"PWGTP{i}" for i in range(1, N_REPLICATE_WEIGHTS + 1)]
-PERSON_VARS_WITH_REPLICATES = PERSON_VARS + REPLICATE_WEIGHT_VARS
-
-# Household-record variables (acs5/pums "housing" file).
-HOUSING_VARS = [
-    "SERIALNO",
-    "WGTP",       # housing unit weight
-    "TEN",        # tenure (1 owned w/ mortgage, 2 owned free, 3 rented, 4 occupied w/o pmt)
-    "HHT",        # household type
-    "HHL",        # household language
-    "MV",         # when householder moved in
-    "VEH",        # vehicles available
-    "HINCP",      # household income
-    "BDSP",       # bedrooms
-    "BLD",        # units in structure (2 = single-family detached)
-    "VALP",       # property value (owner-occupied only)
-    "HFL",        # heating fuel (2 propane, 4 oil/kerosene, 6 wood = rural signals)
-    "YRBLT",      # year structure built. PUMS 5-Year encodes this as the
-                  # decade-start year: 1939 = "1939 or earlier", 1940 = 1940s,
-                  # 1950 = 1950s, ..., 2010 = 2010s, 2020 = "2020 or later".
-                  # (Earlier samples used YBL with small integer codes; 2023
-                  # 5-Year uses YRBLT with year values.)
-    "ACR",        # lot size (1 = <1 acre, 2 = 1-9.99 ac, 3 = 10+ ac)
-    "AGS",        # sales of agricultural products (1 none, 2 = $1-999, 3 = $1k-2.5k, etc.)
-    "TEL",        # telephone service (1 yes, 2 no)
-    "BROADBND",   # broadband internet subscription (1 yes, 2 no)
-    "PLM",        # complete plumbing facilities (1 yes, 2 no)
-    "LAPTOP",     # laptop or desktop in household (1 yes, 2 no)
-    "FS",         # food stamps received in last year (1 yes, 2 no)
-    "PARTNER",    # presence of unmarried partner (0 NA, 1 opp-sex, 2 same-sex, 3 no partner)
-    "MULTG",      # multigenerational household
-    "HUPAOC",     # presence of own children
-    "HHLDRRAC1P", # householder race (diagnostic)
-    # Same-sex household indicator: derived below from householder + spouse/partner sex.
-]
+# Variable lists for the API pull. Kept in pums_fields.py because the
+# catalog is large and grows; pipeline.py focuses on logic. Both lists
+# are deliberately generous: a field listed here gets loaded into the
+# parquet eagerly so a POSTed cohort can reference it without forcing
+# a rebuild. See docs/fields.md for the full PUMS catalog with codes.
+from pums_fields import (  # noqa: E402
+    HOUSING_VARS,
+    N_REPLICATE_WEIGHTS,
+    PERSON_VARS,
+    PERSON_VARS_WITH_REPLICATES,
+    REPLICATE_WEIGHT_VARS,
+)
 
 # Direct CSV download from the Census FTP. The API endpoint had reliability issues
 # (intermittent 500s on small queries, can't pin down the cause), so we pull the
@@ -330,6 +253,34 @@ def fetch_puma_list() -> list[str]:
     return pumas_list
 
 
+def _required_parquet_columns() -> set[str]:
+    """Set of columns the cached parquet must contain to be considered
+    valid for the running system.
+
+    Composed from two sources:
+      - Hardcoded plumbing: SERIALNO (person/housing join), PUMA (group
+        key), PWGTP (person weight), WGTP (housing weight), and the
+        N_REPLICATE_WEIGHTS SDR replicate weights.
+      - Every field referenced by any cohort vector in the library JSON.
+        Includes derived fields like SAME_SEX, which is computed during
+        fetch_pums and persisted to the parquet.
+
+    PERSON_VARS / HOUSING_VARS deliberately do NOT participate. Those
+    lists are a generous catalog of "what fields exist and where to
+    read them from"; an entry there that no cohort currently uses is
+    legitimate (kept around so a POSTed user cohort can reference it
+    without forcing a parquet rebuild). The validation only fails when
+    a column the running system actually depends on is missing.
+    """
+    cols: set[str] = {"SERIALNO", "PUMA", "PWGTP", "WGTP"}
+    cols.update(f"PWGTP{i}" for i in range(1, N_REPLICATE_WEIGHTS + 1))
+    library = json.loads(CONFIG.read_text())
+    for cohort in library:
+        for cond in cohort.get("vector", []):
+            cols.add(cond["field"])
+    return cols
+
+
 def fetch_pums() -> pd.DataFrame:
     """Download CA PUMS person + household CSVs, join, return a single DataFrame.
 
@@ -341,16 +292,12 @@ def fetch_pums() -> pd.DataFrame:
     if parquet_out.exists():
         print(f"[cache] loading {parquet_out}")
         df = pd.read_parquet(parquet_out)
-        # Cache must have every column the pipeline expects today: replicate
-        # weights, all PERSON_VARS, and all HOUSING_VARS. Anything missing
-        # means the parquet predates a column-list change and we regenerate
-        # rather than silently scoring conditions on absent fields as zero.
-        required_cols = (
-            ["PWGTP80"]
-            + [c for c in PERSON_VARS if c != "SERIALNO"]
-            + [c for c in HOUSING_VARS if c != "SERIALNO"]
-        )
-        missing = [c for c in required_cols if c not in df.columns]
+        # Validation: the parquet must contain every column the running
+        # system actually depends on (cohort library fields + hardcoded
+        # plumbing). PERSON_VARS / HOUSING_VARS deliberately don't
+        # participate here — see _required_parquet_columns docstring.
+        required_cols = _required_parquet_columns()
+        missing = sorted(c for c in required_cols if c not in df.columns)
         if not missing:
             return df
         print(f"[cache] cached parquet lacks columns {missing}; regenerating")
