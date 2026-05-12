@@ -289,8 +289,15 @@ def score(req: CohortRequest, request: Request) -> CohortResponse:
 
     # Persist the full response to disk so future cache hits are O(1).
     # Shape matches CohortResponse exactly so we can model_validate the
-    # file contents on hit without any reshaping.
-    cache_file.write_text(json.dumps(result))
+    # file contents on hit without any reshaping. Best-effort: if the
+    # cache directory got removed (e.g. user did `rm -rf cohort_cache/`
+    # to invalidate stale entries), we still serve the response and
+    # accept that next request will recompute.
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(result))
+    except OSError as e:
+        print(f"[score] warn: cache write failed ({type(e).__name__}: {e}); serving response without persisting")
 
     elapsed_ms = int((time.time() - t0) * 1000)
     print(
