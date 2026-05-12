@@ -585,7 +585,7 @@ def _compute_vifs(Xz):
     return vifs
 
 
-def fit_area_level_model(
+def _fit_area_level_model(
     puma_scores: dict[str, float],
     puma_pop: dict[str, float],
     puma_marginals: list[dict[str, float]],
@@ -708,7 +708,7 @@ def fit_area_level_model(
     moran_z: float | None = None
     moran_p: float | None = None
     if spatial_weights is not None:
-        moran_i, moran_z, moran_p = compute_morans_i(
+        moran_i, moran_z, moran_p = _compute_morans_i(
             residuals.tolist(), keep_pumas, spatial_weights
         )
 
@@ -814,7 +814,7 @@ def fit_area_level_model(
     # paper) belong above this layer, not here.
 
 
-def compute_morans_i(
+def _compute_morans_i(
     residuals: list[float],
     ids: list[str],
     neighbors: dict[str, list[str]],
@@ -943,7 +943,7 @@ def _process_one_cohort_for_tracts(
     model = None
     if marginals_list:
         print(f"[fit] {sub_id}: ridge+NNLS with FH+Conley+bootstrap...")
-        model = fit_area_level_model(
+        model = _fit_area_level_model(
             cohort_puma_scores,
             puma_pop,
             puma_marginals,
