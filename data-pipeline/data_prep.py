@@ -191,13 +191,6 @@ def fetch_pums() -> pd.DataFrame:
     The cached parquet must contain the PUMS replicate weights (PWGTP1..PWGTP80)
     for the Fay-Herriot variance estimator. If an older cache lacks them, we
     regenerate the parquet rather than silently use an incomplete cache.
-
-    # The fetching surface in this module is laid out roughly as:
-    #   - PUMS microdata: _download, _read_pums_csv, fetch_pums (this fn)
-    #   - PUMA geometry: load_puma_shapefile, build_puma_centroids,
-    #     build_puma_queen_neighbors
-    #   - Tract→PUMA crosswalk: fetch_tract_puma_crosswalk
-    # This, after reading, is one of the most important functions. But that's only clear from reading the function
     """
     parquet_out = CACHE / "pums_ca.parquet"
     if parquet_out.exists():
@@ -241,8 +234,6 @@ def fetch_pums() -> pd.DataFrame:
     #   23 = same-sex husband/wife/spouse
     #   24 = same-sex unmarried partner
     # If any person in a household has one of those codes, the household is same-sex.
-
-    # Looking at this, this really seems like a vector level decision. We can have a frontend way of grouping the required fields.
     if "RELSHIPP" in persons.columns:
         ss_mask = persons["RELSHIPP"].isin([23, 24])
         ss_serials = set(persons.loc[ss_mask, "SERIALNO"].unique())

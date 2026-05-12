@@ -236,8 +236,10 @@ def fetch_acs_tract_marginal(var: str) -> TractMarginal:
             )
         return TractMarginal(estimates=estimates, moes=moes)
 
-    # Fetch estimate and MOE together in a single API call.
-    # This seems to be one of the slowest things in the entire codebase. adding a "new one of these" (i don't really understand what this does) is why making new calculations seems to be SOOOOO slow. 
+    # Fetch estimate and MOE together in a single API call. This is the
+    # cold-start bottleneck for cohorts whose marginals aren't already in
+    # the shared marginal_cache: each new ACS variable is a ~5-15s
+    # network round-trip to the Census Detailed Tables API.
     url = f"{ACS_API}?get=NAME,{var},{moe_var}&for=tract:*&in=state:06"
     print(f"[fetch] ACS tract var {var} (with MOE {moe_var})")
     r = requests.get(url, timeout=120)
@@ -317,7 +319,7 @@ def _phase1_share_blend(
     """Phase 1 fallback: weighted convex combination of normalized marginal shares
     within a PUMA. Each marginal proposes a tract distribution; we average them
     using the cohort-specified weights. Robust to zeros and missing values.
-    Closed-form equivalent of IPF on a single-axis distribution problem.""" # This is good
+    Closed-form equivalent of IPF on a single-axis distribution problem."""
     if puma_score <= 0 or not tract_geoids:
         return {}
     weight_total = sum(weights)
@@ -385,7 +387,7 @@ def _estimate_sigma2_u_prasad_rao(
 
     where m is the number of areas and p is the number of parameters.
     Reference: Prasad & Rao 1990, *JASA* 85(409), 163-171.
-    """ # Good text here. Could include what the utility of it is in context.
+    """
     m = len(y)
     p = X.shape[1]
     if m <= p:
@@ -407,7 +409,7 @@ def _compute_eblup(y, X, beta, sigma2_e, sigma2_u):
     γ_p is near 1 and the direct estimate is preserved.
 
     Returns (eblup_predictions, gamma_per_area).
-    """ # Could also explain utility in context
+    """
     synthetic = X @ beta
     direct_residual = y - synthetic
     denom = sigma2_u + sigma2_e
@@ -430,14 +432,7 @@ def _compute_conley_se(X_z, residuals, lam, puma_ids, centroids, bandwidth_km=CO
     estimator. With the NNLS non-negativity constraint, this is approximate
     for any coefficient that hit the boundary β = 0 (whose effective SE is
     degenerate); the bootstrap procedure is the rigorous companion estimate.
-    """ #Utility for this would be good to. But it's good this is cited. 
-    # The block below is the estimation core: ridge+NNLS fit, LOOCV
-    # λ selection, FH+EBLUP shrinkage, Conley spatial HAC, percentile
-    # bootstrap, VIFs, condition number, Moran's I on residuals.
-    # Each step has a citation in its own docstring; together they are
-    # the methodological surface area the paper describes. If this
-    # module ever splits further, that's the natural seam (e.g.,
-    # estimation/ subpackage with one file per technique).
+    """
     n, p = X_z.shape
     if len(puma_ids) != n or not centroids:
         return [float("nan")] * p
@@ -560,7 +555,7 @@ def _compute_vifs(Xz):
 
     For columns whose R² with the others is at or above VIF_INFINITY_THRESHOLD_R2,
     we report VIF = inf rather than computing a noisy 1/(1-R²) near machine epsilon.
-    """ # good citing
+    """
     n_features = Xz.shape[1]
     vifs = []
     for j in range(n_features):

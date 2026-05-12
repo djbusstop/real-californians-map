@@ -120,7 +120,7 @@ def score_subculture(df: pd.DataFrame, sub: dict) -> tuple[pd.Series, pd.Series]
 
     Membership is then derived elsewhere via `compute_membership()`, which
     applies the cohort's threshold τ to the fit score. See METHODOLOGY.md
-    "Scoring" for the membership rule. #Is there an academic basis for the methods here?
+    "Scoring" for the membership rule.
     """
     gate = pd.Series(True, index=df.index)
     score = pd.Series(0.0, index=df.index)
@@ -149,7 +149,7 @@ def compute_membership(
     condition passes (gate = True) AND (b) the soft fit score is at or
     above threshold. Returned as float (0.0 / 1.0) for compatibility with
     downstream PWGTP-weighted aggregation.
-    """ # and here
+    """
     return (gate & (fit_score >= threshold)).astype(float)
 
 
