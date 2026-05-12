@@ -2061,8 +2061,12 @@ def main() -> None:
     default_threshold = DEFAULT_MEMBERSHIP_THRESHOLD
     print(f"[config] loaded {len(subcultures)} subcultures (default τ={default_threshold:.2f})")
 
-    # Boundaries first — needed to discover PUMA codes before chunked PUMS pulls.
-    fetch_pumas_geojson()
+    # Geometry rendering (PUMA shapefile extraction + clipped boundary
+    # geojson) is owned by scripts/render_geometry.py now. main() assumes
+    # the shapefile already lives in cache/puma_shp/; run the script if
+    # you're on a fresh checkout. The service-startup path in service.py
+    # keeps a defensive fallback that calls fetch_pumas_geojson when the
+    # shapefile is missing, so the function stays in this module.
 
     df = fetch_pums()
     print(f"[scoring] {len(df):,} records, {df['PUMA'].nunique()} PUMAs")
@@ -2297,7 +2301,8 @@ def main() -> None:
                 f"({summary.get('fallback_reason', '')})"
             )
 
-    fetch_tracts_geojson()
+    # Tract geometry is rendered by scripts/render_geometry.py and lives
+    # in web/public/data/. Pipeline.py does not regenerate it.
 
 
 if __name__ == "__main__":

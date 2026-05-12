@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "sync-data": "mkdir -p public/data && cp ../data-pipeline/data/tract_scores.json ../data-pipeline/data/tracts_ca.geojson public/data/"
+    "sync-data": "mkdir -p public/data && cp ../data-pipeline/data/tracts_ca.geojson public/data/"
   },
   "dependencies": {
     "next": "^14.2.5",
