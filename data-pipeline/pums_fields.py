@@ -50,8 +50,15 @@ PERSON_VARS = [
     "SEX",        # 1 male, 2 female
     "RAC1P",      # race recoded major (1 white, 2 Black, 6 Asian, ...)
     "RAC2P",      # race recoded detailed (sub-groups within RAC1P)
+    "RACAIAN",    # multi-race flag: any American Indian / Alaska Native (1 yes, 0 no)
+    "RACASN",     # multi-race flag: any Asian
+    "RACBLK",     # multi-race flag: any Black / African American
+    "RACNHPI",    # multi-race flag: any Native Hawaiian / Pacific Islander
+    "RACSOR",     # multi-race flag: any "some other race"
+    "RACWHT",     # multi-race flag: any White
     "HISP",       # Hispanic origin (1 not Hispanic, 2-24 specific origins)
     "ANC1P",      # primary ancestry code
+    "ANC2P",      # secondary ancestry code (for mixed-heritage cohorts)
     "NATIVITY",   # 1 US-born, 2 foreign-born
     "POBP",       # place of birth
     "CIT",        # citizenship status (1-4 native, 5 naturalized, 6 not citizen)
@@ -72,6 +79,9 @@ PERSON_VARS = [
     # ── Family / household role ──
     "MAR",        # marital status (1 married, 2 widowed, 3 divorced, 4 separated, 5 never married)
     "MARHT",      # times married (1-3)
+    "MARHYP",     # year last married (4-digit; for newlywed signal)
+    "MARHD",      # divorced in past 12 months (1 yes, 2 no; acute vs. ever-divorced)
+    "MSP",        # married, spouse present/absent recode (cleaner than MAR + RELSHIPP combo)
     "RELSHIPP",   # relationship to householder (used to derive SAME_SEX)
     "FER",        # gave birth in last 12 mo (1 yes, 2 no; women 15-50 only)
     "NOP",        # number of own children
@@ -90,12 +100,15 @@ PERSON_VARS = [
 
     # ── Military ──
     "MIL",        # service status (1 active, 2 past active, 3 training only, 4 never)
+    "VPS",        # veteran period of service (Vietnam, Gulf, post-9/11, etc.; refines MIL)
 
     # ── Health insurance ──
     "HICOV",      # any insurance (1 yes, 2 no)
     "HINS1",      # employer-based
+    "HINS2",      # private direct-purchase (gig / self-employed signal)
     "HINS3",      # Medicare
     "HINS4",      # Medicaid / Medi-Cal
+    "HINS6",      # VA health care (veteran signal)
     "PUBCOV",     # any public
 
     # ── Employment ──
@@ -116,6 +129,7 @@ PERSON_VARS = [
     "SSP",        # Social Security income
     "SSIP",       # Supplemental Security Income
     "PAP",        # public assistance income
+    "INTP",       # interest, dividend, and net rental income (wealth / passive income signal)
     "POVPIP",     # income-to-poverty ratio (501 max; 100 = at poverty line)
 
     # ── Commute / mobility ──
@@ -147,6 +161,7 @@ HOUSING_VARS = [
     "MULTG",      # multigenerational household
     "LNGI",       # limited-English-speaking household
     "PARTNER",    # presence of unmarried partner (used to derive SAME_SEX)
+    "R65",        # presence of persons 65+ in household (multigen / elder-care signal)
 
     # ── Structure / lot ──
     "BLD",        # units in structure (2 = single-family detached)
@@ -168,8 +183,10 @@ HOUSING_VARS = [
     "FINCP",      # family income
     "VALP",       # property value (owner-occupied only)
     "RNTP",       # monthly rent
+    "GRPIP",      # gross rent as % of household income (renter cost burden)
     "MRGP",       # first mortgage payment
     "SMOCP",      # selected monthly owner costs
+    "OCPIP",      # selected monthly owner costs as % of household income (owner cost burden)
     "FS",         # food stamps received in last year
     "WIF",        # workers in family
 
@@ -184,6 +201,7 @@ HOUSING_VARS = [
 
     # ── Householder demographics (diagnostic) ──
     "HHLDRRAC1P", # householder race
+    "HHLDRAGEP",  # householder age
 
     # Same-sex household indicator: derived in pipeline.fetch_pums from
     # RELSHIPP codes 23 (same-sex spouse) and 24 (same-sex unmarried
