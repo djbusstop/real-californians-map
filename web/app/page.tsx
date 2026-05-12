@@ -17,10 +17,8 @@
 // NEXT_PUBLIC_ prefix needed since the call is server-to-server).
 
 import library from "@/lib/library.json";
+import { COHORT_API_BASE } from "@/lib/constants";
 import MapView from "@/components/MapView";
-
-const COHORT_API_BASE =
-  process.env.COHORT_API_BASE ?? "http://localhost:8000";
 
 export interface Cohort {
   id: string;
