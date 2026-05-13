@@ -350,7 +350,7 @@ export default function MapView({ cohorts }: Props) {
       >
         <span className="map-info-text">
           {dots.features.length.toLocaleString()} dots · {visibleCohorts.length}{" "}
-          cohort
+          subcultur
           {visibleCohorts.length === 1 ? "" : "s"} · 1 dot ≈{" "}
           {DOTS_PER_UNIT.toLocaleString()} people
         </span>
