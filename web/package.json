@@ -5,17 +5,16 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
-    "sync-data": "mkdir -p public/data && cp ../data-pipeline/data/tract_scores.json ../data-pipeline/data/tracts_ca.geojson public/data/"
+    "start": "next start"
   },
   "dependencies": {
-    "next": "^14.2.5",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "maplibre-gl": "^4.7.1",
     "@turf/bbox": "^7.1.0",
     "@turf/boolean-point-in-polygon": "^7.1.0",
-    "@turf/helpers": "^7.1.0"
+    "@turf/helpers": "^7.1.0",
+    "maplibre-gl": "^4.7.1",
+    "next": "^14.2.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@types/geojson": "^7946.0.14",

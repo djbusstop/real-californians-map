@@ -1,6 +1,6 @@
 # Real Californians: web app
 
-The Next.js app that renders the subculture cohort scores as dot density on California census tracts. The data comes from `data-pipeline/`, which produces the JSON outputs this app reads.
+The Next.js app. Renders the subculture cohorts as dot density on California census tracts. The cohort library (`lib/library.json`) ships with the app; the actual tract scores come from the FastAPI scoring service in `../data-pipeline/`.
 
 ## First-run setup
 
@@ -8,25 +8,26 @@ Requires Node 18+ and npm. From this folder (`web/`):
 
 ```sh
 npm install
-npm run sync-data   # copies pipeline outputs into public/data/
 npm run dev
 ```
 
 Then open http://localhost:3000.
 
-`sync-data` copies `tract_scores.json` and `tracts_ca.geojson` from `../data-pipeline/data/`. Re-run `sync-data` whenever you re-run the pipeline.
+The page expects two things to exist:
 
-After editing `subcultures.yaml`, the typical iteration loop from this folder is:
+- `public/data/tracts_ca.geojson` — clipped tract boundaries, written by `../data-pipeline/scripts/generate_clipped_tracts.py`.
+- A running scoring service at `http://localhost:8000` (default) — started with `uvicorn server:app` from `../data-pipeline/`.
 
-```sh
-(cd ../data-pipeline && source .venv/bin/activate && python pipeline.py) && npm run sync-data && npm run dev
-```
+If the service isn't running, the map shows an error boundary with a hint to start it. If the tract GeoJSON is missing, the map renders empty.
 
 ## What the app does
 
-- Loads cohort tract scores and California tract geometry on first paint.
+- Reads `lib/library.json` for the cohort definitions and metadata.
+- Loads the tract GeoJSON on first paint.
+- POSTs each cohort definition to `POST /score` on the scoring service; the response carries tract-level scores plus the model's raw statistical diagnostics. Responses are content-hash cached server-side, so refreshing is fast.
 - Renders each cohort as random dots inside the tracts where it concentrates. One dot represents about 20 weighted cohort-equivalent people.
-- Sidebar lists the named cohorts; click to toggle each on or off. Multiple cohorts can render simultaneously, each with its own color.
+- Sidebar lists the cohorts; click to toggle each on or off. Multiple cohorts can render simultaneously, each with its own color.
+- "+ new cohort" opens a builder modal where users can author an ad-hoc cohort. The modal posts to the same `/score` endpoint and renders the result on the map alongside the named cohorts.
 - Mobile-responsive layout: sidebar slides in and out via a toggle button at narrow viewports.
 - Map is clipped to California's land area, so dots never fall in the ocean or the Bay.
 - OpenFreeMap positron basemap underneath the dots. City and place-name labels are layered above the dots so they remain readable.
@@ -36,26 +37,30 @@ After editing `subcultures.yaml`, the typical iteration loop from this folder is
 - `DOTS_PER_UNIT` in `components/MapView.tsx` controls dot density. Currently 20 (one dot ≈ 20 weighted people). Lower = more dots = denser visual.
 - The zoom-radius interpolation expression in `components/MapView.tsx` controls dot size at each zoom level. Edit the array of `(zoom, radius)` pairs inside the `circle-radius` paint property.
 - `COLORS` in `lib/colors.ts` is the single source of truth for cohort colors. Edit one map there and the sidebar, dots, and mobile legend all update consistently.
-- Cohort definitions, trait vectors, and tract marginals live in `../data-pipeline/subcultures.yaml`. Edit there, re-run the pipeline, re-sync data.
+- `COHORT_API_BASE` in `lib/constants.ts` points the frontend at the scoring service URL.
+- Cohort definitions, trait vectors, and tract marginals live in `lib/library.json`. Edit there and reload; the frontend re-posts to the service and the response renders.
 
 ## File structure
 
 ```
 app/
   layout.tsx           Root layout
-  page.tsx             Main page; cohort selection state, mobile-responsive layout
+  page.tsx             Main page (server component); fetches cohort scores
   globals.css          Minimal styles
 components/
-  MapView.tsx          MapLibre map with dot density layer
-  Sidebar.tsx          Cohort browser with name + vibe
+  MapView.tsx          MapLibre map with dot density layer + legend
+  CohortBuilder.tsx    Modal form for authoring ad-hoc cohorts
+  Sidebar.tsx          Cohort browser
 lib/
+  library.json         Cohort library (source of truth)
   colors.ts            Cohort color palette
+  constants.ts         API base URL, color constants
+  types.ts             Shared types
 utils/
   dotgen.ts            Random-point generation inside tract polygons (turf-based)
 public/
-  data/                (synced from data-pipeline/data/)
-    tract_scores.json
-    tracts_ca.geojson
+  data/
+    tracts_ca.geojson  Written by data-pipeline/scripts/generate_clipped_tracts.py
 ```
 
 ## Methodology

@@ -44,7 +44,7 @@ Each subculture is defined as a configuration record with four components:
 
 4. A **proxy-gap note** documented in the configuration, recording the categorical attributes that the trait vector cannot directly capture (e.g. gender identity, political affiliation, religious affiliation, consumption preferences). These notes are part of the published configuration for methodological transparency.
 
-The full configuration is in `data-pipeline/subcultures.yaml`.
+The full configuration is in `data-pipeline/web/lib/library.json`.
 
 ### Cohorts in this implementation
 
@@ -285,6 +285,32 @@ Each pattern is a different way of being operationalized correctly. The numerica
 
 This is consistent with the project's epistemic posture (see "Project framing" above): the diagnostics test a hypothesis about how the archetype meets the data. The hypothesis can succeed or fail in different ways depending on the archetype's underlying geographic shape, and a failed test is itself a finding about the archetype, not only about the model.
 
+#### Calibration as finding: the patterns are derived, not declared
+
+The patterns described above (broadly distributed, demographically anchored, historically clustered) are findings from the existing cohort library, not categories declared in advance and then matched to cohorts. This is the project's **calibration-as-finding paradigm**, and it has consequences beyond the published map.
+
+The user-facing cohort builder (see `docs/cohort_api_spec.md`) lets readers author new cohorts whose statistical signatures can be compared against the existing library. The named patterns serve as illustrative anchors for qualitative comparison ("this cohort's concentration_index is similar to bilingual_baddie") rather than as classification boundaries with magic-number thresholds. The cohort library is therefore doing double duty: it is both the project's substantive thesis about California's cultural geography and the empirical reference set against which new user-defined cohorts are interpreted.
+
+**The descriptive/interpretive separation makes the system extensible.** The `/score` endpoint deliberately returns only raw statistics (tract-level counts and per-cohort summary metrics) and no derived classifications, no `cohort_type` enum, and no threshold-driven labels. The interpretive vocabulary lives entirely in the layer above. Any interpretive frame (a researcher reading the statistics directly, an analyst writing in a different language, a future visualization tool) can sit on top of the same statistical layer without changes to the pipeline. This is the same extensibility argument the paper makes about multi-author cohort libraries (William Bunge's Detroit Geographic Expedition; kollektiv orangotango+'s *This Is Not An Atlas*), applied to the interpretive layer rather than the cohort-authoring layer. The API contract is what enforces the paradigm: if `/score` returned a `cohort_type` classification, it would foreclose the interpretive layer's vocabulary and collapse the iterative cycle into one-shot classification. Keeping `/score` stats-only is therefore a methodological commitment, not just an aesthetic choice. Flagged for inclusion in the post-launch paper revision.
+
+Three implications:
+
+1. **The currently-named patterns are not a closed set.** As new editorial cohorts are authored, the library may reveal additional patterns or refine the boundaries between existing ones. The pipeline does not assume the count is three; the API contract does not return a `cohort_type` enum.
+
+2. **No cohort exists solely to populate a pattern slot.** Every cohort in the library is a positioned editorial contribution per the autoethnographic vantage articulated in the paper. The calibration value of a cohort is a side effect of authentic authorship, never the reason for it.
+
+3. **Retrospective analysis of the library is itself a methodological practice.** When the library reaches sufficient size (roughly a dozen authentically authored cohorts), an audit of the actual statistical signatures across patterns becomes possible and is worth surfacing as a methods supplement to Section 9 of the paper.
+
+#### Field derivation policy: the SAME_SEX exception
+
+The PUMS field catalog (`data-pipeline/pums_fields.yaml`) is a strict enumeration of CSV columns the pipeline reads, with one documented exception: `SAME_SEX`, a binary person-level indicator derived in `data_prep.fetch_pums` from `RELSHIPP` codes 23 (same-sex spouse) and 24 (same-sex unmarried partner). The derived field is persisted to the parquet alongside the raw fields and is selectable by cohort definitions in the same way any other PUMS variable is.
+
+**Methodological basis.** Projecting a household-level fact onto person records is standard ACS practice and is documented in the Census Bureau's *Understanding and Using American Community Survey Data: What All Data Users Need to Know* (2020). The official poverty rate is the canonical example: a household-level threshold reported as a person-level statistic. Within-household clustering inflates variance if persons are treated as independent observations; the project handles this through SDR variance estimation with the 80 replicate weights `PWGTP1..PWGTP80` (Wolter 2007, *Introduction to Variance Estimation*, 2nd ed., Springer). For the specific case of same-sex household composition on ACS, the Williams Institute at UCLA Law has been doing this kind of household-to-person projection for over a decade (Gates & Newport at Gallup/Williams is the canonical line); the framing is that the person is the unit of analysis and the household trait is the exposure.
+
+**Interpretation.** `SAME_SEX = 1` on a person record means "lives in a same-sex household," not "is in a same-sex relationship." For a child in such a household, `SAME_SEX = 1` is a statement about home environment, not identity. Cohort definitions that gate on `SAME_SEX` should be written with that distinction in mind, consistent with the calibration-as-finding paradigm: the data supports the claim "this tract has high density of persons in same-sex households," which is what the map actually shows.
+
+**Policy.** `SAME_SEX` is the project's *one* documented derivation exception. It exists because it propagates a household-level fact (the householder/partner relationship) onto person records, and the current cohort operators cannot express that join. If a future cohort definition reaches for a second household-level field as a person-level filter (e.g. `MULTG`, `LNGI`, `HUPAC`), the architecturally correct response is to build a generic `household_has` operator rather than add a second special-case derivation. The catalog should not accumulate ad-hoc derivations.
+
 #### Precision and what diagnostics can detect
 
 A practical observation worth naming: the same diagnostic value can carry different evidential weight at different signal-to-noise ratios, because residuals are a sum of measurement noise (sampling variance σ²_e) and unexplained structure. When σ²_e is large, residuals are dominated by noise and any underlying spatial pattern in the cohort's geography is *masked* — Moran's I picks up only the small fraction of residual variance that is genuinely structural. When σ²_e drops (e.g., by switching from 1-year to 5-year ACS PUMS, or by including more replicate-weighted records in the SDR variance estimate), the noise floor falls and previously-masked spatial structure becomes measurable.
@@ -299,7 +325,7 @@ The pipeline includes two guards that surface data-quality issues at the source 
 
 **Tract-marginal all-zeros detection.** When `fetch_acs_tract_marginal` retrieves an ACS Detailed Tables variable and the response is 100% zeros across all California tracts, the pipeline prints a warning and refuses to cache the result. The Census Bureau suppresses some detailed tables (e.g., `B16001` detailed-language and `B11009` same-sex partner-household) at tract level for disclosure reasons. Without the guard, an all-zeros response would be cached indefinitely and silently drive the corresponding cohort's tract distribution to a uniform-within-PUMA fallback. With the guard, the configurer is informed that a chosen marginal does not publish at tract level and should be substituted (typically with a collapsed published table such as `C16001`).
 
-**Missing-field detection in trait vectors.** When a condition in `subcultures.yaml` references a PUMS field that is not present in the loaded DataFrame (e.g., a typo such as `AGEPP` for `AGEP`, or a variable that was removed from `PERSON_VARS`), the pipeline prints a one-time warning per field and continues with that condition scoring zero for every record. Without the guard, the cohort would silently lose that condition's contribution and the configurer would have no signal that anything was wrong.
+**Missing-field detection in trait vectors.** When a condition in `web/lib/library.json` references a PUMS field that is not present in the loaded DataFrame (e.g., a typo such as `AGEPP` for `AGEP`, or a variable that was removed from `PERSON_VARS`), the pipeline prints a one-time warning per field and continues with that condition scoring zero for every record. Without the guard, the cohort would silently lose that condition's contribution and the configurer would have no signal that anything was wrong.
 
 ### Numerical robustness
 
@@ -347,7 +373,7 @@ Dot counts are proportional to the underlying tract-level score within a single 
 
 The dot placement on the map carries uncertainty from three stacked decisions, in roughly decreasing order of magnitude:
 
-1. **The trait vector that defines each cohort.** This is the largest source of uncertainty and is irreducibly subjective. No statistical machinery can determine "what counts as a queer leftist" from data alone; the trait vector is an editorial operationalization of a cultural archetype. The per-cohort proxy-gap notes in `subcultures.yaml` document what the trait vector cannot capture.
+1. **The trait vector that defines each cohort.** This is the largest source of uncertainty and is irreducibly subjective. No statistical machinery can determine "what counts as a queer leftist" from data alone; the trait vector is an editorial operationalization of a cultural archetype. The per-cohort proxy-gap notes in `web/lib/library.json` document what the trait vector cannot capture.
 
 2. **The choice of tract-level marginal variables.** Marginals are selected manually based on judgment about correlation with the cohort's expected geography, then constrained by what the Census Bureau publishes at tract level. Some natural choices (Table B16001 detailed-language, Table B11009 same-sex partner) are suppressed at the tract level and we substitute alternatives. Sensitivity to this selection is not formally characterized.
 
@@ -391,7 +417,7 @@ A reviewer's leverage on improving the map's accuracy is therefore highest at (1
 
 The full pipeline — configuration, scoring code, distribution code, and visualization code — is open. The relevant files are:
 
-- `data-pipeline/subcultures.yaml` — every condition, weight, gate, and marginal for every cohort.
+- `web/lib/library.json` — every condition, weight, gate, and marginal for every cohort.
 - `data-pipeline/pipeline.py` — fetches PUMS, scores records, distributes to tracts, writes outputs.
 - `web/components/MapView.tsx` — rendering.
 
