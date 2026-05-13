@@ -52,6 +52,15 @@ const TiersContext = createContext<{
 interface Props {
   onCohort: (cohort: Omit<Cohort, "color"> | null) => void;
   hasCohort: boolean;
+  // Optional custom trigger. Called with an `open` callback the host
+  // can wire to any button or other element. When omitted, the builder
+  // renders its own default "edit cohort" / "+ new cohort" pill.
+  renderTrigger?: (open: () => void) => React.ReactNode;
+  // Controlled mode. When `open` is provided, the modal's open state
+  // lives in the host (and the host renders all triggers itself); the
+  // default trigger and any renderTrigger output are suppressed.
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
 // ---------------------------------------------------------------------
@@ -2168,8 +2177,20 @@ function fmtMinutes(n: number): string {
 // Main component
 // ---------------------------------------------------------------------
 
-export default function CohortBuilder({ onCohort, hasCohort }: Props) {
-  const [open, setOpen] = useState(false);
+export default function CohortBuilder({
+  onCohort,
+  hasCohort,
+  renderTrigger,
+  open: openProp,
+  onOpenChange,
+}: Props) {
+  const [openInternal, setOpenInternal] = useState(false);
+  const controlled = openProp !== undefined;
+  const open = controlled ? openProp : openInternal;
+  const setOpen = (v: boolean) => {
+    if (controlled) onOpenChange?.(v);
+    else setOpenInternal(v);
+  };
   const [draft, setDraft] = useState<DraftState>(DEFAULT_DRAFT);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2242,24 +2263,29 @@ export default function CohortBuilder({ onCohort, hasCohort }: Props) {
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        style={{
-          background: "rgba(255,255,255,0.85)",
-          padding: "4px 8px",
-          borderRadius: 4,
-          fontSize: 11,
-          color: "#1a1f2e",
-          fontFamily: monoFont,
-          border: "1px solid rgba(0,0,0,0.08)",
-          cursor: "pointer",
-          textAlign: "left",
-          width: 240,
-        }}
-      >
-        {hasCohort ? "edit cohort" : "+ new cohort"}
-      </button>
+      {!controlled &&
+        (renderTrigger ? (
+          renderTrigger(() => setOpen(true))
+        ) : (
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            style={{
+              background: "rgba(255,255,255,0.85)",
+              padding: "4px 8px",
+              borderRadius: 4,
+              fontSize: 11,
+              color: "#1a1f2e",
+              fontFamily: monoFont,
+              border: "1px solid rgba(0,0,0,0.08)",
+              cursor: "pointer",
+              textAlign: "left",
+              width: 240,
+            }}
+          >
+            {hasCohort ? "edit cohort" : "+ new cohort"}
+          </button>
+        ))}
 
       {open && (
         <div

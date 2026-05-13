@@ -6,7 +6,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import type { Cohort } from "@/lib/types";
 import { buildDotLayer } from "@/utils/dotgen";
 import { AUTHORED_COHORT_COLOR } from "@/lib/constants";
-import CohortBuilder from "./CohortBuilder";
+import CustomCohorts from "./CustomCohorts";
 
 interface Props {
   cohorts: Cohort[];
@@ -89,18 +89,20 @@ export default function MapView({ cohorts }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MlMap | null>(null);
   const beforeIdRef = useRef<string | undefined>(undefined);
-  // Form-authored cohort (at most one at a time). Cleared via the
-  // builder modal's delete button. The builder modal manages its own
-  // loading state while POSTing to /score, so no separate "scoring"
-  // flag at the MapView level is needed.
-  const [authoredCohort, setAuthoredCohort] = useState<Cohort | null>(null);
+  // Form-authored cohorts. Today the cohort builder only creates one
+  // at a time, but the state shape is an array so the legend's
+  // CustomCohorts component can grow to multiple without another
+  // refactor at this layer. CustomCohorts owns the builder modal and
+  // the create/edit triggers; MapView just stores the result of save
+  // / delete here.
+  const [authoredCohorts, setAuthoredCohorts] = useState<Cohort[]>([]);
 
-  // Combined cohort set: library entries plus the (at most one)
-  // form-authored cohort. The legend always renders this complete
-  // set so the user can toggle visibility of any cohort.
+  // Combined cohort set: library entries plus any form-authored
+  // cohorts. The legend always renders this complete set so the user
+  // can toggle visibility of any cohort.
   const allCohorts = useMemo<Cohort[]>(
-    () => (authoredCohort ? [...cohorts, authoredCohort] : cohorts),
-    [cohorts, authoredCohort],
+    () => [...cohorts, ...authoredCohorts],
+    [cohorts, authoredCohorts],
   );
 
   // Per-cohort selection toggled by clicking legend rows. Default
@@ -130,19 +132,26 @@ export default function MapView({ cohorts }: Props) {
     [allCohorts, selectedIds],
   );
 
-  // Saving a cohort focuses the map on it: the new cohort becomes
-  // the only selected one. Deleting it restores the full library
-  // selection so the map is never left empty after a delete. Users
-  // can still re-toggle individual library cohorts back on after a
-  // save by clicking their legend rows.
-  const onCohortFromBuilder = (c: Omit<Cohort, "color"> | null) => {
-    if (c === null) {
-      setAuthoredCohort(null);
-      setSelectedIds(new Set(cohorts.map((lc) => lc.id)));
-      return;
-    }
-    setAuthoredCohort({ ...c, color: AUTHORED_COHORT_COLOR });
+  // Saving an authored cohort focuses the map on it (the new cohort
+  // becomes the only selected layer). Editing in place keeps the
+  // selection state on the same id. Deleting restores the full
+  // library selection so the map is never left empty.
+  const saveAuthoredCohort = (c: Omit<Cohort, "color">) => {
+    const withColor: Cohort = { ...c, color: AUTHORED_COHORT_COLOR };
+    setAuthoredCohorts((prev) => {
+      const idx = prev.findIndex((existing) => existing.id === c.id);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = withColor;
+        return next;
+      }
+      return [...prev, withColor];
+    });
     setSelectedIds(new Set([c.id]));
+  };
+  const deleteAuthoredCohort = (id: string) => {
+    setAuthoredCohorts((prev) => prev.filter((c) => c.id !== id));
+    setSelectedIds(new Set(cohorts.map((lc) => lc.id)));
   };
   // Flips true once the basemap has loaded and the dots source/layer
   // are installed. The data-sync effect keys off this so it doesn't try
@@ -461,7 +470,7 @@ export default function MapView({ cohorts }: Props) {
             border: "1px solid rgba(0,0,0,0.08)",
             borderRadius: 4,
             padding: "4px 8px",
-            fontSize: 11,
+            fontSize: 12,
             color: "#1a1f2e",
             fontFamily: "ui-monospace, monospace",
             minWidth: 140,
@@ -470,25 +479,28 @@ export default function MapView({ cohorts }: Props) {
         >
           <div
             style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 8,
+              fontSize: 16,
+              fontWeight: 500,
+              lineHeight: 1.2,
+              whiteSpace: "nowrap",
               padding: "2px 0 4px",
               borderBottom: "1px solid rgba(0,0,0,0.06)",
+              marginBottom: 6,
+            }}
+          >
+            California Culture Map
+          </div>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "baseline",
+              justifyContent: "space-between",
+              gap: 16,
+              color: "#6a7283",
               marginBottom: 4,
             }}
           >
-            <span
-              style={{
-                fontSize: 14,
-                fontWeight: 500,
-                lineHeight: 1.2,
-                whiteSpace: "nowrap",
-              }}
-            >
-              California Culture Map
-            </span>
+            <span style={{ fontSize: 14 }}>Legend</span>
             <button
               type="button"
               onClick={() => setSelectedIds(new Set())}
@@ -499,7 +511,7 @@ export default function MapView({ cohorts }: Props) {
                 border: "none",
                 padding: 0,
                 cursor: selectedIds.size === 0 ? "default" : "pointer",
-                fontSize: 11,
+                fontSize: 12,
                 fontFamily: "ui-monospace, monospace",
                 color: selectedIds.size === 0 ? "#d1d5db" : "#6a7283",
                 textDecoration: selectedIds.size === 0 ? "none" : "underline",
@@ -509,7 +521,7 @@ export default function MapView({ cohorts }: Props) {
               clear
             </button>
           </div>
-          {allCohorts.map((c) => {
+          {cohorts.map((c) => {
             const selected = selectedIds.has(c.id);
             return (
               <button
@@ -548,11 +560,14 @@ export default function MapView({ cohorts }: Props) {
               </button>
             );
           })}
+          <CustomCohorts
+            cohorts={authoredCohorts}
+            selectedIds={selectedIds}
+            onToggleSelected={toggleCohort}
+            onSave={saveAuthoredCohort}
+            onDelete={deleteAuthoredCohort}
+          />
         </div>
-        <CohortBuilder
-          onCohort={onCohortFromBuilder}
-          hasCohort={authoredCohort !== null}
-        />
       </div>
     </div>
   );
