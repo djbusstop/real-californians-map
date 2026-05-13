@@ -125,18 +125,6 @@ class CohortRequest(BaseModel):
     vector: List[VectorEntry] = Field(..., min_length=1)
     proxy_gap: Optional[str] = None
 
-    @field_validator("vector")
-    @classmethod
-    def _at_least_one_required_gate(cls, v: list[VectorEntry]) -> list[VectorEntry]:
-        if not any(entry.required for entry in v):
-            raise PydanticCustomError(
-                "no_required_gate",
-                "Cohort vector must include at least one condition with "
-                "required: true. See METHODOLOGY: every cohort needs at "
-                "least one identity gate.",
-            )
-        return v
-
 
 class CohortStats(BaseModel):
     """Stats payload. See cohort_api_spec.md §3.3."""
@@ -318,7 +306,7 @@ def score(req: CohortRequest, request: Request) -> CohortResponse:
 # These flow through unchanged because Pydantic preserves the `type` field
 # we set in the validator. Codes for built-in Pydantic errors (length,
 # range, etc.) are mapped in _classify_builtin_error_code below.
-_SPEC_CUSTOM_CODES = {"unknown_field", "unknown_op", "no_required_gate"}
+_SPEC_CUSTOM_CODES = {"unknown_field", "unknown_op"}
 
 
 @app.exception_handler(RequestValidationError)

@@ -465,9 +465,50 @@ export default function MapView({ cohorts }: Props) {
             color: "#1a1f2e",
             fontFamily: "ui-monospace, monospace",
             minWidth: 140,
-            maxWidth: 240,
+            width: "fit-content",
           }}
         >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 8,
+              padding: "2px 0 4px",
+              borderBottom: "1px solid rgba(0,0,0,0.06)",
+              marginBottom: 4,
+            }}
+          >
+            <span
+              style={{
+                fontSize: 14,
+                fontWeight: 500,
+                lineHeight: 1.2,
+                whiteSpace: "nowrap",
+              }}
+            >
+              California Culture Map
+            </span>
+            <button
+              type="button"
+              onClick={() => setSelectedIds(new Set())}
+              disabled={selectedIds.size === 0}
+              title="hide every layer"
+              style={{
+                background: "transparent",
+                border: "none",
+                padding: 0,
+                cursor: selectedIds.size === 0 ? "default" : "pointer",
+                fontSize: 11,
+                fontFamily: "ui-monospace, monospace",
+                color: selectedIds.size === 0 ? "#d1d5db" : "#6a7283",
+                textDecoration: selectedIds.size === 0 ? "none" : "underline",
+                flexShrink: 0,
+              }}
+            >
+              clear
+            </button>
+          </div>
           {allCohorts.map((c) => {
             const selected = selectedIds.has(c.id);
             return (

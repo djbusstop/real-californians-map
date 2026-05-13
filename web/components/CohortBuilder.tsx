@@ -23,9 +23,31 @@
 // inside this file is set up so adding it later is mostly per-field
 // configuration, not a rewrite.
 
-import { useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import type { Cohort } from "@/lib/types";
 import { COHORT_API_BASE } from "@/lib/constants";
+
+// Importance tier per active control row. "required" makes every
+// emitted condition a hard gate (required: true); the other three map
+// to weights 0.5 / 1 / 2 on the soft-similarity score. See
+// METHODOLOGY.md "Scoring" for how weights compose with the threshold.
+type Tier = "required" | "low" | "med" | "high";
+const DEFAULT_TIER: Tier = "med";
+
+function tierToVectorProps(tier: Tier | undefined): { weight: number; required?: boolean } {
+  const t = tier ?? DEFAULT_TIER;
+  if (t === "required") return { weight: 1, required: true };
+  if (t === "low") return { weight: 0.5 };
+  if (t === "high") return { weight: 2 };
+  return { weight: 1 };
+}
+
+// React context so each Section can read its own tier without forcing
+// every Section call site to thread tier props explicitly.
+const TiersContext = createContext<{
+  tiers: Record<string, Tier>;
+  setTier: (key: string, tier: Tier) => void;
+}>({ tiers: {}, setTier: () => {} });
 
 interface Props {
   onCohort: (cohort: Omit<Cohort, "color"> | null) => void;
@@ -182,138 +204,155 @@ type CommuteModePill =
   | "worked from home";
 type VeteranEraPill = "post-9/11" | "Gulf" | "Vietnam";
 
+// Pill labels for the pooled-boolean sections. Each label maps to one
+// or more underlying PUMS conditions; the buildVector mapping lives in
+// the section's loop. Keeping them as enumerated string literal
+// unions gives us exhaustiveness checks if a new option is added.
+type HouseholdFeaturesPill =
+  | "queer"
+  | "new parent"
+  | "multigen"
+  | "elder in home"
+  | "unmarried partner"
+  | "raising grandchild";
+type LanguageFlagsPill = "non-English home" | "limited-English household";
+type HouseholdTechPill = "broadband" | "laptop" | "smartphone";
+type InsuranceCoveragePill =
+  | "insured"
+  | "employer"
+  | "Medicare"
+  | "Medi-Cal"
+  | "VA";
+
+// A single rule on a multi-rule field. Each rule carries its own
+// value (here a [lo, hi] age range) and its own tier. The frontend
+// enforces at most one required rule per field by demoting any
+// previously-required rule to "med" when a new one is set to
+// "required". See METHODOLOGY notes on the gate vs weight math.
+interface RangeRule {
+  range: [number, number];
+  tier: Tier;
+}
+
 interface DraftState {
   title: string;
   vibe: string;
-  ageRange: [number, number];
-  incomeRange: [number, number];
+  // Multi-rule list. Empty list = "any age". Each entry contributes
+  // one AGEP range condition to the cohort vector with its own tier.
+  ageRules: RangeRule[];
+  incomeRules: RangeRule[];
   // Education is a range over SCHL codes (1-24). Lets the user express
   // "high school only" or "some college through bachelor's" without
   // being limited to gte. Labels are bucketed concepts not raw codes
   // (see fmtSchlConcept).
-  educationRange: [number, number];
-  kidsRange: [number, number];
-  living: Living[];
+  educationRules: RangeRule[];
+  kidsRules: RangeRule[];
+  livingRules: PillRule<Living>[];
   // Mixed-field pill group. `queer` maps to SAME_SEX = 1. The other
   // three collapse into one MAR in [...] condition at vector-build
   // time so multi-select reads as "married OR divorced OR widowed."
-  identity: IdentityPill[];
+  identityRules: PillRule<IdentityPill>[];
   // TEN tenure pills. Multi-select; collapse into one TEN in [...]
   // condition. Both selected is equivalent to "any tenure" so the
   // condition is omitted.
-  housing: HousingPill[];
+  housingRules: PillRule<HousingPill>[];
 
   // Accordion: demographics
-  race: RacePill[];
-  sex: SexPill[];
-  citizenship: CitizenshipPill[];
+  raceRules: PillRule<RacePill>[];
+  sexRules: PillRule<SexPill>[];
+  citizenshipRules: PillRule<CitizenshipPill>[];
   recentlyMoved: boolean;
 
-  // Accordion: family
-  queerHousehold: boolean;
-  fertility: boolean;
-  multigenerational: boolean;
-  seniorsInHome: boolean;
-  unmarriedPartner: boolean;
-  grandparentCaretaker: boolean;
+  // Accordion: family — pooled household-composition pills, each
+  // mapping to a separate boolean PUMS condition. Multi-rule: each
+  // rule is one pill selection set + one tier.
+  householdFeaturesRules: PillRule<HouseholdFeaturesPill>[];
 
   // Accordion: language & education
-  speaksNonEnglish: boolean;
-  englishRange: [number, number];
-  limitedEnglishHousehold: boolean;
+  languageFlagsRules: PillRule<LanguageFlagsPill>[];
+  englishRules: RangeRule[];
 
   // Accordion: money & work
-  familyIncomeRange: [number, number];
-  hoursRange: [number, number];
-  povertyRange: [number, number];
+  familyIncomeRules: RangeRule[];
+  hoursRules: RangeRule[];
+  povertyRules: RangeRule[];
   foodStamps: boolean;
-  classOfWorker: ClassOfWorkerPill[];
+  classOfWorkerRules: PillRule<ClassOfWorkerPill>[];
 
   // Accordion: disability (subtypes replace single toggle)
-  disability: DisabilityPill[];
+  disabilityRules: PillRule<DisabilityPill>[];
 
-  // Accordion: health insurance
-  hasInsurance: boolean;
-  employerInsurance: boolean;
-  medicare: boolean;
-  medicaid: boolean;
-  vaInsurance: boolean;
+  // Accordion: health insurance — pooled coverage pills.
+  insuranceCoverageRules: PillRule<InsuranceCoveragePill>[];
 
   // Accordion: housing detail
-  housingType: HousingTypePill[];
-  yearBuiltRange: [number, number];
-  yearMovedRange: [number, number];
-  bedroomsRange: [number, number];
-  vehiclesRange: [number, number];
-  heatingFuel: HeatingFuelPill[];
-  propertyValueRange: [number, number];
-  rentBurdenRange: [number, number];
-  ownerCostBurdenRange: [number, number];
+  housingTypeRules: PillRule<HousingTypePill>[];
+  yearBuiltRules: RangeRule[];
+  yearMovedRules: RangeRule[];
+  bedroomsRules: RangeRule[];
+  vehiclesRules: RangeRule[];
+  heatingFuelRules: PillRule<HeatingFuelPill>[];
+  propertyValueRules: RangeRule[];
+  rentBurdenRules: RangeRule[];
+  ownerCostBurdenRules: RangeRule[];
 
-  // Accordion: tech
-  broadband: boolean;
-  laptop: boolean;
-  smartphone: boolean;
+  // Accordion: tech — pooled tech-access pills.
+  householdTechRules: PillRule<HouseholdTechPill>[];
 
   // Accordion: commute
-  commuteMode: CommuteModePill[];
-  commuteTimeRange: [number, number];
+  commuteModeRules: PillRule<CommuteModePill>[];
+  commuteTimeRules: RangeRule[];
 
   // Accordion: military
   veteran: boolean;
-  veteranEra: VeteranEraPill[];
+  veteranEraRules: PillRule<VeteranEraPill>[];
+
+  // Per-section importance tier. Keyed by Section controlKey
+  // (snake_case label). Missing entries default to "med" (weight 1).
+  // At least one entry must be "required" before save is enabled, so
+  // the API's "at least one required gate" contract is honored.
+  tiers: Record<string, Tier>;
 }
 
 const DEFAULT_DRAFT: DraftState = {
   title: "",
   vibe: "",
-  ageRange: [AGE_MIN, AGE_MAX],
-  incomeRange: [INCOME_MIN, INCOME_MAX],
-  educationRange: [SCHL_MIN, SCHL_MAX],
-  kidsRange: [KIDS_MIN, KIDS_MAX],
-  living: [],
-  identity: [],
-  housing: [],
-  race: [],
-  sex: [],
-  citizenship: [],
+  ageRules: [],
+  incomeRules: [],
+  educationRules: [],
+  kidsRules: [],
+  livingRules: [],
+  identityRules: [],
+  housingRules: [],
+  raceRules: [],
+  sexRules: [],
+  citizenshipRules: [],
   recentlyMoved: false,
-  queerHousehold: false,
-  fertility: false,
-  multigenerational: false,
-  seniorsInHome: false,
-  unmarriedPartner: false,
-  grandparentCaretaker: false,
-  speaksNonEnglish: false,
-  englishRange: [ENG_MIN, ENG_MAX],
-  limitedEnglishHousehold: false,
-  familyIncomeRange: [FAMILY_INCOME_MIN, FAMILY_INCOME_MAX],
-  hoursRange: [WKHP_MIN, WKHP_MAX],
-  povertyRange: [POVPIP_MIN, POVPIP_MAX],
+  householdFeaturesRules: [],
+  languageFlagsRules: [],
+  englishRules: [],
+  familyIncomeRules: [],
+  hoursRules: [],
+  povertyRules: [],
   foodStamps: false,
-  classOfWorker: [],
-  disability: [],
-  hasInsurance: false,
-  employerInsurance: false,
-  medicare: false,
-  medicaid: false,
-  vaInsurance: false,
-  housingType: [],
-  yearBuiltRange: [YRBLT_MIN, YRBLT_MAX],
-  yearMovedRange: [MV_MIN, MV_MAX],
-  bedroomsRange: [BDSP_MIN, BDSP_MAX],
-  vehiclesRange: [VEH_MIN, VEH_MAX],
-  heatingFuel: [],
-  propertyValueRange: [VALP_MIN, VALP_MAX],
-  rentBurdenRange: [GRPIP_MIN, GRPIP_MAX],
-  ownerCostBurdenRange: [OCPIP_MIN, OCPIP_MAX],
-  broadband: false,
-  laptop: false,
-  smartphone: false,
-  commuteMode: [],
-  commuteTimeRange: [JWMNP_MIN, JWMNP_MAX],
+  classOfWorkerRules: [],
+  disabilityRules: [],
+  insuranceCoverageRules: [],
+  housingTypeRules: [],
+  yearBuiltRules: [],
+  yearMovedRules: [],
+  bedroomsRules: [],
+  vehiclesRules: [],
+  heatingFuelRules: [],
+  propertyValueRules: [],
+  rentBurdenRules: [],
+  ownerCostBurdenRules: [],
+  householdTechRules: [],
+  commuteModeRules: [],
+  commuteTimeRules: [],
   veteran: false,
-  veteranEra: [],
+  veteranEraRules: [],
+  tiers: {},
 };
 
 const STORAGE_KEY = "cohort_draft_v1";
@@ -324,6 +363,352 @@ function readDraft(): DraftState {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_DRAFT;
     const parsed = JSON.parse(raw);
+
+    // Migrate legacy single-rule age (`ageRange: [lo, hi]` + tier in
+    // `tiers.age`) to the multi-rule list (`ageRules: [{range, tier}]`).
+    // A draft at the full default range collapses to an empty list
+    // since "any age" is no condition.
+    if ("ageRange" in parsed && !("ageRules" in parsed)) {
+      const [lo, hi] = parsed.ageRange ?? [AGE_MIN, AGE_MAX];
+      if (lo > AGE_MIN || hi < AGE_MAX) {
+        const legacyTier: Tier = parsed.tiers?.age ?? DEFAULT_TIER;
+        parsed.ageRules = [{ range: [lo, hi], tier: legacyTier }];
+      } else {
+        parsed.ageRules = [];
+      }
+      delete parsed.ageRange;
+    }
+    if ("incomeRange" in parsed && !("incomeRules" in parsed)) {
+      const [lo, hi] = parsed.incomeRange ?? [INCOME_MIN, INCOME_MAX];
+      if (lo > INCOME_MIN || hi < INCOME_MAX) {
+        const legacyTier: Tier = parsed.tiers?.income_household ?? DEFAULT_TIER;
+        parsed.incomeRules = [{ range: [lo, hi], tier: legacyTier }];
+      } else {
+        parsed.incomeRules = [];
+      }
+      delete parsed.incomeRange;
+    }
+    if ("educationRange" in parsed && !("educationRules" in parsed)) {
+      const [lo, hi] = parsed.educationRange ?? [SCHL_MIN, SCHL_MAX];
+      if (lo > SCHL_MIN || hi < SCHL_MAX) {
+        const legacyTier: Tier = parsed.tiers?.education ?? DEFAULT_TIER;
+        parsed.educationRules = [{ range: [lo, hi], tier: legacyTier }];
+      } else {
+        parsed.educationRules = [];
+      }
+      delete parsed.educationRange;
+    }
+    if ("kidsRange" in parsed && !("kidsRules" in parsed)) {
+      const [lo, hi] = parsed.kidsRange ?? [KIDS_MIN, KIDS_MAX];
+      if (lo > KIDS_MIN || hi < KIDS_MAX) {
+        const legacyTier: Tier = parsed.tiers?.children ?? DEFAULT_TIER;
+        parsed.kidsRules = [{ range: [lo, hi], tier: legacyTier }];
+      } else {
+        parsed.kidsRules = [];
+      }
+      delete parsed.kidsRange;
+    }
+    if ("familyIncomeRange" in parsed && !("familyIncomeRules" in parsed)) {
+      const [lo, hi] = parsed.familyIncomeRange ?? [FAMILY_INCOME_MIN, FAMILY_INCOME_MAX];
+      if (lo > FAMILY_INCOME_MIN || hi < FAMILY_INCOME_MAX) {
+        const legacyTier: Tier = parsed.tiers?.family_income ?? DEFAULT_TIER;
+        parsed.familyIncomeRules = [{ range: [lo, hi], tier: legacyTier }];
+      } else {
+        parsed.familyIncomeRules = [];
+      }
+      delete parsed.familyIncomeRange;
+    }
+    if ("hoursRange" in parsed && !("hoursRules" in parsed)) {
+      const [lo, hi] = parsed.hoursRange ?? [WKHP_MIN, WKHP_MAX];
+      if (lo > WKHP_MIN || hi < WKHP_MAX) {
+        const legacyTier: Tier = parsed.tiers?.hours_per_week ?? DEFAULT_TIER;
+        parsed.hoursRules = [{ range: [lo, hi], tier: legacyTier }];
+      } else {
+        parsed.hoursRules = [];
+      }
+      delete parsed.hoursRange;
+    }
+    if ("povertyRange" in parsed && !("povertyRules" in parsed)) {
+      const [lo, hi] = parsed.povertyRange ?? [POVPIP_MIN, POVPIP_MAX];
+      if (lo > POVPIP_MIN || hi < POVPIP_MAX) {
+        const legacyTier: Tier = parsed.tiers?.poverty_status ?? DEFAULT_TIER;
+        parsed.povertyRules = [{ range: [lo, hi], tier: legacyTier }];
+      } else {
+        parsed.povertyRules = [];
+      }
+      delete parsed.povertyRange;
+    }
+    if ("englishRange" in parsed && !("englishRules" in parsed)) {
+      const [lo, hi] = parsed.englishRange ?? [ENG_MIN, ENG_MAX];
+      if (lo > ENG_MIN || hi < ENG_MAX) {
+        const legacyTier: Tier = parsed.tiers?.english_fluency ?? DEFAULT_TIER;
+        parsed.englishRules = [{ range: [lo, hi], tier: legacyTier }];
+      } else {
+        parsed.englishRules = [];
+      }
+      delete parsed.englishRange;
+    }
+    if ("yearBuiltRange" in parsed && !("yearBuiltRules" in parsed)) {
+      const [lo, hi] = parsed.yearBuiltRange ?? [YRBLT_MIN, YRBLT_MAX];
+      if (lo > YRBLT_MIN || hi < YRBLT_MAX) {
+        const legacyTier: Tier = parsed.tiers?.year_built ?? DEFAULT_TIER;
+        parsed.yearBuiltRules = [{ range: [lo, hi], tier: legacyTier }];
+      } else {
+        parsed.yearBuiltRules = [];
+      }
+      delete parsed.yearBuiltRange;
+    }
+    if ("yearMovedRange" in parsed && !("yearMovedRules" in parsed)) {
+      const [lo, hi] = parsed.yearMovedRange ?? [MV_MIN, MV_MAX];
+      if (lo > MV_MIN || hi < MV_MAX) {
+        const legacyTier: Tier = parsed.tiers?.year_moved_in ?? DEFAULT_TIER;
+        parsed.yearMovedRules = [{ range: [lo, hi], tier: legacyTier }];
+      } else {
+        parsed.yearMovedRules = [];
+      }
+      delete parsed.yearMovedRange;
+    }
+    if ("bedroomsRange" in parsed && !("bedroomsRules" in parsed)) {
+      const [lo, hi] = parsed.bedroomsRange ?? [BDSP_MIN, BDSP_MAX];
+      if (lo > BDSP_MIN || hi < BDSP_MAX) {
+        const legacyTier: Tier = parsed.tiers?.bedrooms ?? DEFAULT_TIER;
+        parsed.bedroomsRules = [{ range: [lo, hi], tier: legacyTier }];
+      } else {
+        parsed.bedroomsRules = [];
+      }
+      delete parsed.bedroomsRange;
+    }
+    if ("vehiclesRange" in parsed && !("vehiclesRules" in parsed)) {
+      const [lo, hi] = parsed.vehiclesRange ?? [VEH_MIN, VEH_MAX];
+      if (lo > VEH_MIN || hi < VEH_MAX) {
+        const legacyTier: Tier = parsed.tiers?.vehicles ?? DEFAULT_TIER;
+        parsed.vehiclesRules = [{ range: [lo, hi], tier: legacyTier }];
+      } else {
+        parsed.vehiclesRules = [];
+      }
+      delete parsed.vehiclesRange;
+    }
+    if ("propertyValueRange" in parsed && !("propertyValueRules" in parsed)) {
+      const [lo, hi] = parsed.propertyValueRange ?? [VALP_MIN, VALP_MAX];
+      if (lo > VALP_MIN || hi < VALP_MAX) {
+        const legacyTier: Tier = parsed.tiers?.home_value ?? DEFAULT_TIER;
+        parsed.propertyValueRules = [{ range: [lo, hi], tier: legacyTier }];
+      } else {
+        parsed.propertyValueRules = [];
+      }
+      delete parsed.propertyValueRange;
+    }
+    if ("rentBurdenRange" in parsed && !("rentBurdenRules" in parsed)) {
+      const [lo, hi] = parsed.rentBurdenRange ?? [GRPIP_MIN, GRPIP_MAX];
+      if (lo > GRPIP_MIN || hi < GRPIP_MAX) {
+        const legacyTier: Tier = parsed.tiers?.rent_burden ?? DEFAULT_TIER;
+        parsed.rentBurdenRules = [{ range: [lo, hi], tier: legacyTier }];
+      } else {
+        parsed.rentBurdenRules = [];
+      }
+      delete parsed.rentBurdenRange;
+    }
+    if ("ownerCostBurdenRange" in parsed && !("ownerCostBurdenRules" in parsed)) {
+      const [lo, hi] = parsed.ownerCostBurdenRange ?? [OCPIP_MIN, OCPIP_MAX];
+      if (lo > OCPIP_MIN || hi < OCPIP_MAX) {
+        const legacyTier: Tier = parsed.tiers?.owner_cost_burden ?? DEFAULT_TIER;
+        parsed.ownerCostBurdenRules = [{ range: [lo, hi], tier: legacyTier }];
+      } else {
+        parsed.ownerCostBurdenRules = [];
+      }
+      delete parsed.ownerCostBurdenRange;
+    }
+    if ("commuteTimeRange" in parsed && !("commuteTimeRules" in parsed)) {
+      const [lo, hi] = parsed.commuteTimeRange ?? [JWMNP_MIN, JWMNP_MAX];
+      if (lo > JWMNP_MIN || hi < JWMNP_MAX) {
+        const legacyTier: Tier = parsed.tiers?.commute_time ?? DEFAULT_TIER;
+        parsed.commuteTimeRules = [{ range: [lo, hi], tier: legacyTier }];
+      } else {
+        parsed.commuteTimeRules = [];
+      }
+      delete parsed.commuteTimeRange;
+    }
+    if ("race" in parsed && !("raceRules" in parsed)) {
+      const arr = parsed.race;
+      if (Array.isArray(arr) && arr.length > 0) {
+        const legacyTier: Tier = parsed.tiers?.race ?? DEFAULT_TIER;
+        parsed.raceRules = [{ pills: arr, tier: legacyTier }];
+      } else {
+        parsed.raceRules = [];
+      }
+      delete parsed.race;
+    }
+    if ("sex" in parsed && !("sexRules" in parsed)) {
+      const arr = parsed.sex;
+      if (Array.isArray(arr) && arr.length > 0) {
+        const legacyTier: Tier = parsed.tiers?.sex ?? DEFAULT_TIER;
+        parsed.sexRules = [{ pills: arr, tier: legacyTier }];
+      } else {
+        parsed.sexRules = [];
+      }
+      delete parsed.sex;
+    }
+    if ("citizenship" in parsed && !("citizenshipRules" in parsed)) {
+      const arr = parsed.citizenship;
+      if (Array.isArray(arr) && arr.length > 0) {
+        const legacyTier: Tier = parsed.tiers?.citizenship ?? DEFAULT_TIER;
+        parsed.citizenshipRules = [{ pills: arr, tier: legacyTier }];
+      } else {
+        parsed.citizenshipRules = [];
+      }
+      delete parsed.citizenship;
+    }
+    if ("identity" in parsed && !("identityRules" in parsed)) {
+      const arr = parsed.identity;
+      if (Array.isArray(arr) && arr.length > 0) {
+        const legacyTier: Tier = parsed.tiers?.marital_status ?? DEFAULT_TIER;
+        parsed.identityRules = [{ pills: arr, tier: legacyTier }];
+      } else {
+        parsed.identityRules = [];
+      }
+      delete parsed.identity;
+    }
+    if ("living" in parsed && !("livingRules" in parsed)) {
+      const arr = parsed.living;
+      if (Array.isArray(arr) && arr.length > 0) {
+        const legacyTier: Tier = parsed.tiers?.living_arrangement ?? DEFAULT_TIER;
+        parsed.livingRules = [{ pills: arr, tier: legacyTier }];
+      } else {
+        parsed.livingRules = [];
+      }
+      delete parsed.living;
+    }
+    if ("housing" in parsed && !("housingRules" in parsed)) {
+      const arr = parsed.housing;
+      if (Array.isArray(arr) && arr.length > 0) {
+        const legacyTier: Tier = parsed.tiers?.tenure ?? DEFAULT_TIER;
+        parsed.housingRules = [{ pills: arr, tier: legacyTier }];
+      } else {
+        parsed.housingRules = [];
+      }
+      delete parsed.housing;
+    }
+    if ("housingType" in parsed && !("housingTypeRules" in parsed)) {
+      const arr = parsed.housingType;
+      if (Array.isArray(arr) && arr.length > 0) {
+        const legacyTier: Tier = parsed.tiers?.housing_type ?? DEFAULT_TIER;
+        parsed.housingTypeRules = [{ pills: arr, tier: legacyTier }];
+      } else {
+        parsed.housingTypeRules = [];
+      }
+      delete parsed.housingType;
+    }
+    if ("heatingFuel" in parsed && !("heatingFuelRules" in parsed)) {
+      const arr = parsed.heatingFuel;
+      if (Array.isArray(arr) && arr.length > 0) {
+        const legacyTier: Tier = parsed.tiers?.heating_fuel ?? DEFAULT_TIER;
+        parsed.heatingFuelRules = [{ pills: arr, tier: legacyTier }];
+      } else {
+        parsed.heatingFuelRules = [];
+      }
+      delete parsed.heatingFuel;
+    }
+    if ("classOfWorker" in parsed && !("classOfWorkerRules" in parsed)) {
+      const arr = parsed.classOfWorker;
+      if (Array.isArray(arr) && arr.length > 0) {
+        const legacyTier: Tier = parsed.tiers?.class_of_worker ?? DEFAULT_TIER;
+        parsed.classOfWorkerRules = [{ pills: arr, tier: legacyTier }];
+      } else {
+        parsed.classOfWorkerRules = [];
+      }
+      delete parsed.classOfWorker;
+    }
+    if ("disability" in parsed && !("disabilityRules" in parsed)) {
+      const arr = parsed.disability;
+      if (Array.isArray(arr) && arr.length > 0) {
+        const legacyTier: Tier = parsed.tiers?.disability_type ?? DEFAULT_TIER;
+        parsed.disabilityRules = [{ pills: arr, tier: legacyTier }];
+      } else {
+        parsed.disabilityRules = [];
+      }
+      delete parsed.disability;
+    }
+    if ("commuteMode" in parsed && !("commuteModeRules" in parsed)) {
+      const arr = parsed.commuteMode;
+      if (Array.isArray(arr) && arr.length > 0) {
+        const legacyTier: Tier = parsed.tiers?.commute_mode ?? DEFAULT_TIER;
+        parsed.commuteModeRules = [{ pills: arr, tier: legacyTier }];
+      } else {
+        parsed.commuteModeRules = [];
+      }
+      delete parsed.commuteMode;
+    }
+    if ("veteranEra" in parsed && !("veteranEraRules" in parsed)) {
+      const arr = parsed.veteranEra;
+      if (Array.isArray(arr) && arr.length > 0) {
+        const legacyTier: Tier = parsed.tiers?.era_of_service ?? DEFAULT_TIER;
+        parsed.veteranEraRules = [{ pills: arr, tier: legacyTier }];
+      } else {
+        parsed.veteranEraRules = [];
+      }
+      delete parsed.veteranEra;
+    }
+
+    // Migrate pooled-boolean sections: each section's underlying
+    // booleans collapse into a single PillRule with the pills the user
+    // had toggled on. Legacy tiers come from `tiers[sectionKey]`.
+    if (!("householdFeaturesRules" in parsed)) {
+      const legacyTier: Tier = parsed.tiers?.household_features ?? DEFAULT_TIER;
+      const pills: HouseholdFeaturesPill[] = [];
+      if (parsed.queerHousehold) pills.push("queer");
+      if (parsed.fertility) pills.push("new parent");
+      if (parsed.multigenerational) pills.push("multigen");
+      if (parsed.seniorsInHome) pills.push("elder in home");
+      if (parsed.unmarriedPartner) pills.push("unmarried partner");
+      if (parsed.grandparentCaretaker) pills.push("raising grandchild");
+      parsed.householdFeaturesRules =
+        pills.length > 0 ? [{ pills, tier: legacyTier }] : [];
+      delete parsed.queerHousehold;
+      delete parsed.fertility;
+      delete parsed.multigenerational;
+      delete parsed.seniorsInHome;
+      delete parsed.unmarriedPartner;
+      delete parsed.grandparentCaretaker;
+    }
+    if (!("languageFlagsRules" in parsed)) {
+      const legacyTier: Tier = parsed.tiers?.language_flags ?? DEFAULT_TIER;
+      const pills: LanguageFlagsPill[] = [];
+      if (parsed.speaksNonEnglish) pills.push("non-English home");
+      if (parsed.limitedEnglishHousehold) pills.push("limited-English household");
+      parsed.languageFlagsRules =
+        pills.length > 0 ? [{ pills, tier: legacyTier }] : [];
+      delete parsed.speaksNonEnglish;
+      delete parsed.limitedEnglishHousehold;
+    }
+    if (!("householdTechRules" in parsed)) {
+      const legacyTier: Tier = parsed.tiers?.household_tech ?? DEFAULT_TIER;
+      const pills: HouseholdTechPill[] = [];
+      if (parsed.broadband) pills.push("broadband");
+      if (parsed.laptop) pills.push("laptop");
+      if (parsed.smartphone) pills.push("smartphone");
+      parsed.householdTechRules =
+        pills.length > 0 ? [{ pills, tier: legacyTier }] : [];
+      delete parsed.broadband;
+      delete parsed.laptop;
+      delete parsed.smartphone;
+    }
+    if (!("insuranceCoverageRules" in parsed)) {
+      const legacyTier: Tier = parsed.tiers?.insurance_coverage ?? DEFAULT_TIER;
+      const pills: InsuranceCoveragePill[] = [];
+      if (parsed.hasInsurance) pills.push("insured");
+      if (parsed.employerInsurance) pills.push("employer");
+      if (parsed.medicare) pills.push("Medicare");
+      if (parsed.medicaid) pills.push("Medi-Cal");
+      if (parsed.vaInsurance) pills.push("VA");
+      parsed.insuranceCoverageRules =
+        pills.length > 0 ? [{ pills, tier: legacyTier }] : [];
+      delete parsed.hasInsurance;
+      delete parsed.employerInsurance;
+      delete parsed.medicare;
+      delete parsed.medicaid;
+      delete parsed.vaInsurance;
+    }
+
     return { ...DEFAULT_DRAFT, ...parsed };
   } catch {
     return DEFAULT_DRAFT;
@@ -350,84 +735,113 @@ interface VectorEntry {
   required?: boolean;
 }
 
+// Apply the tier for the given section key to a partial vector entry.
+// Every condition emitted by a section gets the same tier, so a user
+// who marks "race" as required has each selected race pill emit a hard
+// gate. See METHODOLOGY.md "Scoring" for the gate vs weight math.
+function withTier(
+  draft: DraftState,
+  key: string,
+  entry: Omit<VectorEntry, "weight" | "required">,
+): VectorEntry {
+  return { ...entry, ...tierToVectorProps(draft.tiers[key]) };
+}
+
 function buildVector(draft: DraftState): VectorEntry[] {
   const v: VectorEntry[] = [];
-  const [aLo, aHi] = draft.ageRange;
-  if (aLo > AGE_MIN || aHi < AGE_MAX) {
-    v.push({ field: "AGEP", op: "range", value: [aLo, aHi], weight: 1 });
+  // Multi-rule: emit one AGEP range entry per rule, each with its own
+  // tier. Rules at the full default span are skipped (a "doesn't
+  // matter" rule should not be in the list, but skipping is defensive).
+  for (const rule of draft.ageRules) {
+    const [aLo, aHi] = rule.range;
+    if (aLo > AGE_MIN || aHi < AGE_MAX) {
+      v.push({
+        field: "AGEP",
+        op: "range",
+        value: [aLo, aHi],
+        ...tierToVectorProps(rule.tier),
+      });
+    }
   }
-  const [iLo, iHi] = draft.incomeRange;
-  if (iLo > INCOME_MIN || iHi < INCOME_MAX) {
-    v.push({ field: "HINCP", op: "range", value: [iLo, iHi], weight: 1 });
+  for (const rule of draft.incomeRules) {
+    const [lo, hi] = rule.range;
+    if (lo > INCOME_MIN || hi < INCOME_MAX) {
+      v.push({ field: "HINCP", op: "range", value: [lo, hi], ...tierToVectorProps(rule.tier) });
+    }
   }
-  const [eLo, eHi] = draft.educationRange;
-  if (eLo > SCHL_MIN || eHi < SCHL_MAX) {
-    v.push({ field: "SCHL", op: "range", value: [eLo, eHi], weight: 1 });
+  for (const rule of draft.educationRules) {
+    const [lo, hi] = rule.range;
+    if (lo > SCHL_MIN || hi < SCHL_MAX) {
+      v.push({ field: "SCHL", op: "range", value: [lo, hi], ...tierToVectorProps(rule.tier) });
+    }
   }
-  const [kLo, kHi] = draft.kidsRange;
-  if (kLo > KIDS_MIN || kHi < KIDS_MAX) {
-    v.push({ field: "NOP", op: "range", value: [kLo, kHi], weight: 1 });
+  for (const rule of draft.kidsRules) {
+    const [lo, hi] = rule.range;
+    if (lo > KIDS_MIN || hi < KIDS_MAX) {
+      v.push({ field: "NOP", op: "range", value: [lo, hi], ...tierToVectorProps(rule.tier) });
+    }
   }
-  if (draft.living.length > 0 && draft.living.length < 2) {
-    // Only meaningful if exactly one of the two pills is active. Both
-    // selected = "any household type" = no condition needed.
-    const codes =
-      draft.living[0] === "family" ? HHT_FAMILY : HHT_SINGLE;
-    v.push({ field: "HHT", op: "in", value: codes, weight: 1 });
+  for (const rule of draft.livingRules) {
+    if (rule.pills.length > 0 && rule.pills.length < 2) {
+      const codes = rule.pills[0] === "family" ? HHT_FAMILY : HHT_SINGLE;
+      v.push({ field: "HHT", op: "in", value: codes, ...tierToVectorProps(rule.tier) });
+    }
   }
   // Identity pills collapse into a single MAR condition. Queer
   // (same-sex household) used to live here too; it moved into the
   // family accordion's "household features" pool as a separate
   // boolean, since living in a same-sex household is a family-
   // composition trait rather than a marital identity.
-  const identitySet = new Set(draft.identity);
-  const marCodes: number[] = [];
-  if (identitySet.has("married")) marCodes.push(MAR_MARRIED);
-  if (identitySet.has("widowed")) marCodes.push(MAR_WIDOWED);
-  if (identitySet.has("divorced")) marCodes.push(MAR_DIVORCED);
-  if (marCodes.length > 0) {
-    v.push({ field: "MAR", op: "in", value: marCodes, weight: 1 });
+  for (const rule of draft.identityRules) {
+    const identitySet = new Set(rule.pills);
+    const marCodes: number[] = [];
+    if (identitySet.has("married")) marCodes.push(MAR_MARRIED);
+    if (identitySet.has("widowed")) marCodes.push(MAR_WIDOWED);
+    if (identitySet.has("divorced")) marCodes.push(MAR_DIVORCED);
+    if (marCodes.length > 0) {
+      v.push({ field: "MAR", op: "in", value: marCodes, ...tierToVectorProps(rule.tier) });
+    }
   }
   // Housing tenure pills. Both selected = "any tenure" = omit.
-  if (draft.housing.length > 0 && draft.housing.length < 2) {
-    const codes = draft.housing[0] === "owns" ? TEN_OWN : TEN_RENT;
-    v.push({ field: "TEN", op: "in", value: codes, weight: 1 });
+  for (const rule of draft.housingRules) {
+    if (rule.pills.length > 0 && rule.pills.length < 2) {
+      const codes = rule.pills[0] === "owns" ? TEN_OWN : TEN_RENT;
+      v.push({ field: "TEN", op: "in", value: codes, ...tierToVectorProps(rule.tier) });
+    }
   }
 
   // --- Accordion: race & origin -------------------------------------
   // Each selected race pill becomes its own soft condition. Latino is
   // not a race in Census terms; it's HISP >= 2 (any Hispanic origin).
-  for (const r of draft.race) {
-    if (r === "white") {
-      v.push({ field: "RACWHT", op: "eq", value: 1, weight: 1 });
-    } else if (r === "Black") {
-      v.push({ field: "RACBLK", op: "eq", value: 1, weight: 1 });
-    } else if (r === "Asian") {
-      v.push({ field: "RACASN", op: "eq", value: 1, weight: 1 });
-    } else if (r === "Indigenous") {
-      v.push({ field: "RACAIAN", op: "eq", value: 1, weight: 1 });
-    } else if (r === "Pacific Islander") {
-      v.push({ field: "RACNHPI", op: "eq", value: 1, weight: 1 });
-    } else if (r === "Latino") {
-      v.push({ field: "HISP", op: "gte", value: 2, weight: 1 });
+  for (const rule of draft.raceRules) {
+    const tprops = tierToVectorProps(rule.tier);
+    for (const r of rule.pills) {
+      if (r === "white") v.push({ field: "RACWHT", op: "eq", value: 1, ...tprops });
+      else if (r === "Black") v.push({ field: "RACBLK", op: "eq", value: 1, ...tprops });
+      else if (r === "Asian") v.push({ field: "RACASN", op: "eq", value: 1, ...tprops });
+      else if (r === "Indigenous") v.push({ field: "RACAIAN", op: "eq", value: 1, ...tprops });
+      else if (r === "Pacific Islander") v.push({ field: "RACNHPI", op: "eq", value: 1, ...tprops });
+      else if (r === "Latino") v.push({ field: "HISP", op: "gte", value: 2, ...tprops });
     }
   }
   // Sex pills. Both selected = "any" = omit.
-  if (draft.sex.length === 1) {
-    const code = draft.sex[0] === "female" ? SEX_FEMALE : SEX_MALE;
-    v.push({ field: "SEX", op: "eq", value: code, weight: 1 });
+  for (const rule of draft.sexRules) {
+    if (rule.pills.length === 1) {
+      const code = rule.pills[0] === "female" ? SEX_FEMALE : SEX_MALE;
+      v.push({ field: "SEX", op: "eq", value: code, ...tierToVectorProps(rule.tier) });
+    }
   }
   // Citizenship pills collapse into one CIT in [...] condition. All
   // three selected = "any" = omit.
-  if (draft.citizenship.length > 0 && draft.citizenship.length < 3) {
-    const codes: number[] = [];
-    if (draft.citizenship.includes("native")) codes.push(...CIT_NATIVE);
-    if (draft.citizenship.includes("naturalized"))
-      codes.push(...CIT_NATURALIZED);
-    if (draft.citizenship.includes("non-citizen"))
-      codes.push(...CIT_NON_CITIZEN);
-    if (codes.length > 0) {
-      v.push({ field: "CIT", op: "in", value: codes, weight: 1 });
+  for (const rule of draft.citizenshipRules) {
+    if (rule.pills.length > 0 && rule.pills.length < 3) {
+      const codes: number[] = [];
+      if (rule.pills.includes("native")) codes.push(...CIT_NATIVE);
+      if (rule.pills.includes("naturalized")) codes.push(...CIT_NATURALIZED);
+      if (rule.pills.includes("non-citizen")) codes.push(...CIT_NON_CITIZEN);
+      if (codes.length > 0) {
+        v.push({ field: "CIT", op: "in", value: codes, ...tierToVectorProps(rule.tier) });
+      }
     }
   }
   if (draft.recentlyMoved) {
@@ -435,96 +849,89 @@ function buildVector(draft: DraftState): VectorEntry[] {
     // else means moved. We express "recently moved" as MIG != 1 via
     // gte 2, which covers the moved-from-another-county and
     // moved-from-abroad codes.
-    v.push({ field: "MIG", op: "gte", value: 2, weight: 1 });
+    v.push(withTier(draft, "mobility", { field: "MIG", op: "gte", value: 2 }));
   }
 
-  // --- Accordion: family (toggles for household composition) --------
-  if (draft.queerHousehold) {
-    v.push({ field: "SAME_SEX", op: "eq", value: 1, weight: 1 });
-  }
-  if (draft.fertility) {
-    v.push({ field: "FER", op: "eq", value: 1, weight: 1 });
-  }
-  if (draft.multigenerational) {
-    v.push({ field: "MULTG", op: "eq", value: 1, weight: 1 });
-  }
-  if (draft.seniorsInHome) {
-    v.push({ field: "R65", op: "gte", value: 1, weight: 1 });
-  }
-  if (draft.unmarriedPartner) {
-    v.push({ field: "PARTNER", op: "gte", value: 1, weight: 1 });
-  }
-  if (draft.grandparentCaretaker) {
-    v.push({ field: "GCL", op: "eq", value: 1, weight: 1 });
+  // --- Accordion: family (pooled household-composition pills) -------
+  for (const rule of draft.householdFeaturesRules) {
+    const tprops = tierToVectorProps(rule.tier);
+    for (const p of rule.pills) {
+      if (p === "queer") v.push({ field: "SAME_SEX", op: "eq", value: 1, ...tprops });
+      else if (p === "new parent") v.push({ field: "FER", op: "eq", value: 1, ...tprops });
+      else if (p === "multigen") v.push({ field: "MULTG", op: "eq", value: 1, ...tprops });
+      else if (p === "elder in home") v.push({ field: "R65", op: "gte", value: 1, ...tprops });
+      else if (p === "unmarried partner") v.push({ field: "PARTNER", op: "gte", value: 1, ...tprops });
+      else if (p === "raising grandchild") v.push({ field: "GCL", op: "eq", value: 1, ...tprops });
+    }
   }
 
   // --- Accordion: language & education ------------------------------
-  if (draft.speaksNonEnglish) {
-    v.push({ field: "LANX", op: "eq", value: 1, weight: 1 });
+  for (const rule of draft.languageFlagsRules) {
+    const tprops = tierToVectorProps(rule.tier);
+    for (const p of rule.pills) {
+      if (p === "non-English home") v.push({ field: "LANX", op: "eq", value: 1, ...tprops });
+      else if (p === "limited-English household") v.push({ field: "LNGI", op: "eq", value: 1, ...tprops });
+    }
   }
-  if (
-    draft.englishRange[0] > ENG_MIN ||
-    draft.englishRange[1] < ENG_MAX
-  ) {
-    v.push({
-      field: "ENG",
-      op: "range",
-      value: [draft.englishRange[0], draft.englishRange[1]],
-      weight: 1,
-    });
-  }
-  if (draft.limitedEnglishHousehold) {
-    v.push({ field: "LNGI", op: "eq", value: 1, weight: 1 });
+  for (const rule of draft.englishRules) {
+    const [lo, hi] = rule.range;
+    if (lo > ENG_MIN || hi < ENG_MAX) {
+      v.push({
+        field: "ENG",
+        op: "range",
+        value: [lo, hi],
+        ...tierToVectorProps(rule.tier),
+      });
+    }
   }
 
   // --- Accordion: money & work --------------------------------------
-  if (
-    draft.familyIncomeRange[0] > FAMILY_INCOME_MIN ||
-    draft.familyIncomeRange[1] < FAMILY_INCOME_MAX
-  ) {
-    v.push({
-      field: "FINCP",
-      op: "range",
-      value: [draft.familyIncomeRange[0], draft.familyIncomeRange[1]],
-      weight: 1,
-    });
+  for (const rule of draft.familyIncomeRules) {
+    const [lo, hi] = rule.range;
+    if (lo > FAMILY_INCOME_MIN || hi < FAMILY_INCOME_MAX) {
+      v.push({
+        field: "FINCP",
+        op: "range",
+        value: [lo, hi],
+        ...tierToVectorProps(rule.tier),
+      });
+    }
   }
-  if (
-    draft.hoursRange[0] > WKHP_MIN ||
-    draft.hoursRange[1] < WKHP_MAX
-  ) {
-    v.push({
-      field: "WKHP",
-      op: "range",
-      value: [draft.hoursRange[0], draft.hoursRange[1]],
-      weight: 1,
-    });
+  for (const rule of draft.hoursRules) {
+    const [lo, hi] = rule.range;
+    if (lo > WKHP_MIN || hi < WKHP_MAX) {
+      v.push({
+        field: "WKHP",
+        op: "range",
+        value: [lo, hi],
+        ...tierToVectorProps(rule.tier),
+      });
+    }
   }
-  if (
-    draft.povertyRange[0] > POVPIP_MIN ||
-    draft.povertyRange[1] < POVPIP_MAX
-  ) {
-    v.push({
-      field: "POVPIP",
-      op: "range",
-      value: [draft.povertyRange[0], draft.povertyRange[1]],
-      weight: 1,
-    });
+  for (const rule of draft.povertyRules) {
+    const [lo, hi] = rule.range;
+    if (lo > POVPIP_MIN || hi < POVPIP_MAX) {
+      v.push({
+        field: "POVPIP",
+        op: "range",
+        value: [lo, hi],
+        ...tierToVectorProps(rule.tier),
+      });
+    }
   }
   if (draft.foodStamps) {
-    v.push({ field: "FS", op: "eq", value: 1, weight: 1 });
+    v.push(withTier(draft, "food_stamps", { field: "FS", op: "eq", value: 1 }));
   }
   // Class of worker pills collapse into one COW in [...] condition.
-  if (draft.classOfWorker.length > 0 && draft.classOfWorker.length < 3) {
-    const codes: number[] = [];
-    if (draft.classOfWorker.includes("private"))
-      codes.push(...COW_PRIVATE);
-    if (draft.classOfWorker.includes("government"))
-      codes.push(...COW_GOVERNMENT);
-    if (draft.classOfWorker.includes("self-employed"))
-      codes.push(...COW_SELF_EMPLOYED);
-    if (codes.length > 0) {
-      v.push({ field: "COW", op: "in", value: codes, weight: 1 });
+  for (const rule of draft.classOfWorkerRules) {
+    if (rule.pills.length > 0 && rule.pills.length < 3) {
+      const codes: number[] = [];
+      if (rule.pills.includes("private")) codes.push(...COW_PRIVATE);
+      if (rule.pills.includes("government")) codes.push(...COW_GOVERNMENT);
+      if (rule.pills.includes("self-employed")) codes.push(...COW_SELF_EMPLOYED);
+      if (codes.length > 0) {
+        v.push({ field: "COW", op: "in", value: codes, ...tierToVectorProps(rule.tier) });
+      }
     }
   }
 
@@ -533,218 +940,200 @@ function buildVector(draft: DraftState): VectorEntry[] {
   // type. Sensory expands to both DEAR and DEYE so a person matching
   // either gets a partial score; "independent" expands to DOUT and
   // DDRS for the same reason.
-  for (const d of draft.disability) {
-    if (d === "physical") {
-      v.push({ field: "DPHY", op: "eq", value: 1, weight: 1 });
-    } else if (d === "cognitive") {
-      v.push({ field: "DREM", op: "eq", value: 1, weight: 1 });
-    } else if (d === "sensory") {
-      v.push({ field: "DEAR", op: "eq", value: 1, weight: 1 });
-      v.push({ field: "DEYE", op: "eq", value: 1, weight: 1 });
-    } else if (d === "independent") {
-      v.push({ field: "DOUT", op: "eq", value: 1, weight: 1 });
-      v.push({ field: "DDRS", op: "eq", value: 1, weight: 1 });
+  for (const rule of draft.disabilityRules) {
+    const tprops = tierToVectorProps(rule.tier);
+    for (const d of rule.pills) {
+      if (d === "physical") v.push({ field: "DPHY", op: "eq", value: 1, ...tprops });
+      else if (d === "cognitive") v.push({ field: "DREM", op: "eq", value: 1, ...tprops });
+      else if (d === "sensory") {
+        v.push({ field: "DEAR", op: "eq", value: 1, ...tprops });
+        v.push({ field: "DEYE", op: "eq", value: 1, ...tprops });
+      } else if (d === "independent") {
+        v.push({ field: "DOUT", op: "eq", value: 1, ...tprops });
+        v.push({ field: "DDRS", op: "eq", value: 1, ...tprops });
+      }
     }
   }
 
   // --- Accordion: health insurance ----------------------------------
-  if (draft.hasInsurance) {
-    v.push({ field: "HICOV", op: "eq", value: 1, weight: 1 });
-  }
-  if (draft.employerInsurance) {
-    v.push({ field: "HINS1", op: "eq", value: 1, weight: 1 });
-  }
-  if (draft.medicare) {
-    v.push({ field: "HINS3", op: "eq", value: 1, weight: 1 });
-  }
-  if (draft.medicaid) {
-    v.push({ field: "HINS4", op: "eq", value: 1, weight: 1 });
-  }
-  if (draft.vaInsurance) {
-    v.push({ field: "HINS6", op: "eq", value: 1, weight: 1 });
+  for (const rule of draft.insuranceCoverageRules) {
+    const tprops = tierToVectorProps(rule.tier);
+    for (const p of rule.pills) {
+      if (p === "insured") v.push({ field: "HICOV", op: "eq", value: 1, ...tprops });
+      else if (p === "employer") v.push({ field: "HINS1", op: "eq", value: 1, ...tprops });
+      else if (p === "Medicare") v.push({ field: "HINS3", op: "eq", value: 1, ...tprops });
+      else if (p === "Medi-Cal") v.push({ field: "HINS4", op: "eq", value: 1, ...tprops });
+      else if (p === "VA") v.push({ field: "HINS6", op: "eq", value: 1, ...tprops });
+    }
   }
 
   // --- Accordion: housing detail ------------------------------------
   // Housing type pills collapse into one BLD in [...] condition.
-  if (
-    draft.housingType.length > 0 &&
-    draft.housingType.length < 3
-  ) {
-    const codes: number[] = [];
-    if (draft.housingType.includes("mobile home")) codes.push(...BLD_MOBILE);
-    if (draft.housingType.includes("single-family"))
-      codes.push(...BLD_SINGLE_FAMILY);
-    if (draft.housingType.includes("apartment"))
-      codes.push(...BLD_APARTMENT);
-    if (codes.length > 0) {
-      v.push({ field: "BLD", op: "in", value: codes, weight: 1 });
+  for (const rule of draft.housingTypeRules) {
+    if (rule.pills.length > 0 && rule.pills.length < 3) {
+      const codes: number[] = [];
+      if (rule.pills.includes("mobile home")) codes.push(...BLD_MOBILE);
+      if (rule.pills.includes("single-family")) codes.push(...BLD_SINGLE_FAMILY);
+      if (rule.pills.includes("apartment")) codes.push(...BLD_APARTMENT);
+      if (codes.length > 0) {
+        v.push({ field: "BLD", op: "in", value: codes, ...tierToVectorProps(rule.tier) });
+      }
     }
   }
-  if (
-    draft.yearBuiltRange[0] > YRBLT_MIN ||
-    draft.yearBuiltRange[1] < YRBLT_MAX
-  ) {
-    v.push({
-      field: "YRBLT",
-      op: "range",
-      value: [draft.yearBuiltRange[0], draft.yearBuiltRange[1]],
-      weight: 1,
-    });
+  for (const rule of draft.yearBuiltRules) {
+    const [lo, hi] = rule.range;
+    if (lo > YRBLT_MIN || hi < YRBLT_MAX) {
+      v.push({
+        field: "YRBLT",
+        op: "range",
+        value: [lo, hi],
+        ...tierToVectorProps(rule.tier),
+      });
+    }
   }
-  if (
-    draft.bedroomsRange[0] > BDSP_MIN ||
-    draft.bedroomsRange[1] < BDSP_MAX
-  ) {
-    v.push({
-      field: "BDSP",
-      op: "range",
-      value: [draft.bedroomsRange[0], draft.bedroomsRange[1]],
-      weight: 1,
-    });
+  for (const rule of draft.bedroomsRules) {
+    const [lo, hi] = rule.range;
+    if (lo > BDSP_MIN || hi < BDSP_MAX) {
+      v.push({
+        field: "BDSP",
+        op: "range",
+        value: [lo, hi],
+        ...tierToVectorProps(rule.tier),
+      });
+    }
   }
-  if (
-    draft.vehiclesRange[0] > VEH_MIN ||
-    draft.vehiclesRange[1] < VEH_MAX
-  ) {
-    v.push({
-      field: "VEH",
-      op: "range",
-      value: [draft.vehiclesRange[0], draft.vehiclesRange[1]],
-      weight: 1,
-    });
+  for (const rule of draft.vehiclesRules) {
+    const [lo, hi] = rule.range;
+    if (lo > VEH_MIN || hi < VEH_MAX) {
+      v.push({
+        field: "VEH",
+        op: "range",
+        value: [lo, hi],
+        ...tierToVectorProps(rule.tier),
+      });
+    }
   }
   // Heating fuel pills. Each maps to a single HFL code, collapsed
   // into one HFL in [...] condition.
-  if (draft.heatingFuel.length > 0) {
-    const codes = draft.heatingFuel.map((f) => {
-      switch (f) {
-        case "gas":
-          return HFL_GAS;
-        case "propane":
-          return HFL_PROPANE;
-        case "electric":
-          return HFL_ELECTRIC;
-        case "oil":
-          return HFL_OIL;
-        case "wood":
-          return HFL_WOOD;
-        case "solar":
-          return HFL_SOLAR;
-      }
-    });
-    v.push({ field: "HFL", op: "in", value: codes, weight: 1 });
+  for (const rule of draft.heatingFuelRules) {
+    if (rule.pills.length > 0) {
+      const codes = rule.pills.map((f) => {
+        switch (f) {
+          case "gas": return HFL_GAS;
+          case "propane": return HFL_PROPANE;
+          case "electric": return HFL_ELECTRIC;
+          case "oil": return HFL_OIL;
+          case "wood": return HFL_WOOD;
+          case "solar": return HFL_SOLAR;
+        }
+      });
+      v.push({ field: "HFL", op: "in", value: codes, ...tierToVectorProps(rule.tier) });
+    }
   }
-  if (
-    draft.propertyValueRange[0] > VALP_MIN ||
-    draft.propertyValueRange[1] < VALP_MAX
-  ) {
-    v.push({
-      field: "VALP",
-      op: "range",
-      value: [draft.propertyValueRange[0], draft.propertyValueRange[1]],
-      weight: 1,
-    });
+  for (const rule of draft.propertyValueRules) {
+    const [lo, hi] = rule.range;
+    if (lo > VALP_MIN || hi < VALP_MAX) {
+      v.push({
+        field: "VALP",
+        op: "range",
+        value: [lo, hi],
+        ...tierToVectorProps(rule.tier),
+      });
+    }
   }
-  if (
-    draft.yearMovedRange[0] > MV_MIN ||
-    draft.yearMovedRange[1] < MV_MAX
-  ) {
-    v.push({
-      field: "MV",
-      op: "range",
-      value: [draft.yearMovedRange[0], draft.yearMovedRange[1]],
-      weight: 1,
-    });
+  for (const rule of draft.yearMovedRules) {
+    const [lo, hi] = rule.range;
+    if (lo > MV_MIN || hi < MV_MAX) {
+      v.push({
+        field: "MV",
+        op: "range",
+        value: [lo, hi],
+        ...tierToVectorProps(rule.tier),
+      });
+    }
   }
-  if (
-    draft.rentBurdenRange[0] > GRPIP_MIN ||
-    draft.rentBurdenRange[1] < GRPIP_MAX
-  ) {
-    v.push({
-      field: "GRPIP",
-      op: "range",
-      value: [draft.rentBurdenRange[0], draft.rentBurdenRange[1]],
-      weight: 1,
-    });
+  for (const rule of draft.rentBurdenRules) {
+    const [lo, hi] = rule.range;
+    if (lo > GRPIP_MIN || hi < GRPIP_MAX) {
+      v.push({
+        field: "GRPIP",
+        op: "range",
+        value: [lo, hi],
+        ...tierToVectorProps(rule.tier),
+      });
+    }
   }
-  if (
-    draft.ownerCostBurdenRange[0] > OCPIP_MIN ||
-    draft.ownerCostBurdenRange[1] < OCPIP_MAX
-  ) {
-    v.push({
-      field: "OCPIP",
-      op: "range",
-      value: [draft.ownerCostBurdenRange[0], draft.ownerCostBurdenRange[1]],
-      weight: 1,
-    });
+  for (const rule of draft.ownerCostBurdenRules) {
+    const [lo, hi] = rule.range;
+    if (lo > OCPIP_MIN || hi < OCPIP_MAX) {
+      v.push({
+        field: "OCPIP",
+        op: "range",
+        value: [lo, hi],
+        ...tierToVectorProps(rule.tier),
+      });
+    }
   }
 
   // --- Accordion: tech ----------------------------------------------
-  if (draft.broadband) {
-    v.push({ field: "BROADBND", op: "eq", value: 1, weight: 1 });
-  }
-  if (draft.laptop) {
-    v.push({ field: "LAPTOP", op: "eq", value: 1, weight: 1 });
-  }
-  if (draft.smartphone) {
-    v.push({ field: "SMARTPHONE", op: "eq", value: 1, weight: 1 });
+  for (const rule of draft.householdTechRules) {
+    const tprops = tierToVectorProps(rule.tier);
+    for (const p of rule.pills) {
+      if (p === "broadband") v.push({ field: "BROADBND", op: "eq", value: 1, ...tprops });
+      else if (p === "laptop") v.push({ field: "LAPTOP", op: "eq", value: 1, ...tprops });
+      else if (p === "smartphone") v.push({ field: "SMARTPHONE", op: "eq", value: 1, ...tprops });
+    }
   }
 
   // --- Accordion: commute -------------------------------------------
-  if (draft.commuteMode.length > 0) {
-    const codes: number[] = [];
-    for (const mode of draft.commuteMode) {
-      switch (mode) {
-        case "drove alone":
-          codes.push(...JWTRNS_DROVE_ALONE);
-          break;
-        case "carpool":
-          codes.push(...JWTRNS_CARPOOL);
-          break;
-        case "transit":
-          codes.push(...JWTRNS_TRANSIT);
-          break;
-        case "walked or biked":
-          codes.push(...JWTRNS_WALKED_OR_BIKED);
-          break;
-        case "worked from home":
-          codes.push(...JWTRNS_WORKED_FROM_HOME);
-          break;
+  for (const rule of draft.commuteModeRules) {
+    if (rule.pills.length > 0) {
+      const codes: number[] = [];
+      for (const mode of rule.pills) {
+        switch (mode) {
+          case "drove alone": codes.push(...JWTRNS_DROVE_ALONE); break;
+          case "carpool": codes.push(...JWTRNS_CARPOOL); break;
+          case "transit": codes.push(...JWTRNS_TRANSIT); break;
+          case "walked or biked": codes.push(...JWTRNS_WALKED_OR_BIKED); break;
+          case "worked from home": codes.push(...JWTRNS_WORKED_FROM_HOME); break;
+        }
       }
+      v.push({ field: "JWTRNS", op: "in", value: codes, ...tierToVectorProps(rule.tier) });
     }
-    v.push({ field: "JWTRNS", op: "in", value: codes, weight: 1 });
   }
-  if (
-    draft.commuteTimeRange[0] > JWMNP_MIN ||
-    draft.commuteTimeRange[1] < JWMNP_MAX
-  ) {
-    v.push({
-      field: "JWMNP",
-      op: "range",
-      value: [draft.commuteTimeRange[0], draft.commuteTimeRange[1]],
-      weight: 1,
-    });
+  for (const rule of draft.commuteTimeRules) {
+    const [lo, hi] = rule.range;
+    if (lo > JWMNP_MIN || hi < JWMNP_MAX) {
+      v.push({
+        field: "JWMNP",
+        op: "range",
+        value: [lo, hi],
+        ...tierToVectorProps(rule.tier),
+      });
+    }
   }
 
   // --- Accordion: military service ----------------------------------
   if (draft.veteran) {
     // MIL = 1 (active duty now) or 2 (past active duty) = veteran.
-    v.push({ field: "MIL", op: "in", value: [1, 2], weight: 1 });
+    v.push(withTier(draft, "veteran", { field: "MIL", op: "in", value: [1, 2] }));
   }
-  if (draft.veteranEra.length > 0) {
-    const codes: number[] = [];
-    for (const era of draft.veteranEra) {
-      if (era === "post-9/11") codes.push(...VPS_POST_9_11);
-      else if (era === "Gulf") codes.push(...VPS_GULF);
-      else if (era === "Vietnam") codes.push(...VPS_VIETNAM);
+  for (const rule of draft.veteranEraRules) {
+    if (rule.pills.length > 0) {
+      const codes: number[] = [];
+      for (const era of rule.pills) {
+        if (era === "post-9/11") codes.push(...VPS_POST_9_11);
+        else if (era === "Gulf") codes.push(...VPS_GULF);
+        else if (era === "Vietnam") codes.push(...VPS_VIETNAM);
+      }
+      v.push({ field: "VPS", op: "in", value: codes, ...tierToVectorProps(rule.tier) });
     }
-    v.push({ field: "VPS", op: "in", value: codes, weight: 1 });
   }
 
-  // The API requires at least one required: true condition. Auto-
-  // promote the first active condition so the user does not have to
-  // think about it in v0.
-  if (v.length > 0) v[0].required = true;
+  // Each cohort needs at least one identity gate. The check is enforced
+  // in the save flow (canSave below). No auto-promotion here: a missing
+  // required tier should surface as user-facing friction, not be hidden
+  // by silently turning the first soft signal into a gate.
   return v;
 }
 
@@ -754,41 +1143,30 @@ function buildVector(draft: DraftState): VectorEntry[] {
 function buildMarginals(draft: DraftState): string[] {
   const m: string[] = [];
   // Age uses Sex by Age (population pyramid). One of the densest,
-  // most reliably published ACS tables; safe default.
-  if (
-    draft.ageRange[0] > AGE_MIN ||
-    draft.ageRange[1] < AGE_MAX
-  ) {
+  // most reliably published ACS tables; safe default. Any active rule
+  // (regardless of range) opts the marginal in.
+  if (draft.ageRules.length > 0) {
     m.push("B01001_002E"); // Total male population
   }
-  if (
-    draft.incomeRange[0] > INCOME_MIN ||
-    draft.incomeRange[1] < INCOME_MAX
-  ) {
+  if (draft.incomeRules.length > 0) {
     m.push("B19001_001E"); // Households with income reported
   }
-  if (
-    draft.educationRange[0] > SCHL_MIN ||
-    draft.educationRange[1] < SCHL_MAX
-  ) {
+  if (draft.educationRules.length > 0) {
     m.push("B15003_022E"); // Bachelor's degree count
   }
-  if (
-    draft.kidsRange[0] > KIDS_MIN ||
-    draft.kidsRange[1] < KIDS_MAX
-  ) {
+  if (draft.kidsRules.length > 0) {
     m.push("B11003_001E"); // Family households by presence of children
   }
-  if (draft.living.length === 1) {
+  if (draft.livingRules.length > 0) {
     m.push("B11001_001E"); // Households by type
   }
-  if (draft.identity.length > 0 && !m.includes("B11001_001E")) {
+  if (draft.identityRules.length > 0 && !m.includes("B11001_001E")) {
     // Identity-gated cohorts benefit from a household-type density
     // signal; add the same marginal we use for living arrangement if
     // not already included.
     m.push("B11001_001E");
   }
-  if (draft.housing.length === 1) {
+  if (draft.housingRules.length > 0) {
     m.push("B25003_001E"); // Total occupied housing units
   }
 
@@ -796,87 +1174,68 @@ function buildMarginals(draft: DraftState): string[] {
   // been touched. The API caps at 8 marginals so we slice at the end;
   // quick-control marginals (above) are prioritized by being added
   // first.
-  if (draft.race.length > 0) {
+  if (draft.raceRules.length > 0) {
     m.push("B02001_001E"); // Race - total
   }
-  if (draft.sex.length === 1) {
+  if (draft.sexRules.length > 0) {
     m.push("B01001_001E"); // Sex by age - total
   }
-  if (draft.citizenship.length > 0) {
+  if (draft.citizenshipRules.length > 0) {
     m.push("B05002_001E"); // Place of birth / citizenship - total
   }
   if (
-    draft.speaksNonEnglish ||
-    draft.englishRange[0] > ENG_MIN ||
-    draft.englishRange[1] < ENG_MAX
+    draft.languageFlagsRules.length > 0 ||
+    draft.englishRules.length > 0
   ) {
     m.push("C16001_001E"); // Language at home - total (collapsed)
   }
   if (
-    draft.povertyRange[0] > POVPIP_MIN ||
-    draft.povertyRange[1] < POVPIP_MAX
+    draft.povertyRules.length > 0
   ) {
     m.push("B17001_001E"); // Poverty status - total
   }
   if (draft.foodStamps) {
     m.push("B22001_001E"); // SNAP - total
   }
-  if (draft.disability.length > 0) {
+  if (draft.disabilityRules.length > 0) {
     m.push("B18101_001E"); // Disability - total
   }
-  if (draft.classOfWorker.length > 0) {
+  if (draft.classOfWorkerRules.length > 0) {
     m.push("B24080_001E"); // Class of worker - total
   }
   if (
-    draft.familyIncomeRange[0] > FAMILY_INCOME_MIN ||
-    draft.familyIncomeRange[1] < FAMILY_INCOME_MAX
+    draft.familyIncomeRules.length > 0
   ) {
     m.push("B19101_001E"); // Family income - total
   }
   if (
-    draft.propertyValueRange[0] > VALP_MIN ||
-    draft.propertyValueRange[1] < VALP_MAX
+    draft.propertyValueRules.length > 0
   ) {
     m.push("B25075_001E"); // Home value - total
   }
   if (
-    draft.rentBurdenRange[0] > GRPIP_MIN ||
-    draft.rentBurdenRange[1] < GRPIP_MAX
+    draft.rentBurdenRules.length > 0
   ) {
     m.push("B25070_001E"); // Gross rent as % of income - total
   }
   if (
-    draft.ownerCostBurdenRange[0] > OCPIP_MIN ||
-    draft.ownerCostBurdenRange[1] < OCPIP_MAX
+    draft.ownerCostBurdenRules.length > 0
   ) {
     m.push("B25101_001E"); // Owner cost as % of income - total
   }
-  if (draft.broadband || draft.laptop || draft.smartphone) {
+  if (draft.householdTechRules.length > 0) {
     m.push("B28002_001E"); // Internet subscription - total
   }
   if (
-    draft.commuteMode.length > 0 ||
-    draft.commuteTimeRange[0] > JWMNP_MIN ||
-    draft.commuteTimeRange[1] < JWMNP_MAX
+    draft.commuteModeRules.length > 0 ||
+    draft.commuteTimeRules.length > 0
   ) {
     m.push("B08006_001E"); // Means of transportation to work - total
   }
-  if (
-    draft.hasInsurance ||
-    draft.employerInsurance ||
-    draft.medicare ||
-    draft.medicaid ||
-    draft.vaInsurance
-  ) {
+  if (draft.insuranceCoverageRules.length > 0) {
     m.push("B27001_001E"); // Health insurance coverage - total
   }
-  if (
-    draft.fertility ||
-    draft.multigenerational ||
-    draft.seniorsInHome ||
-    draft.unmarriedPartner ||
-    draft.grandparentCaretaker
-  ) {
+  if (draft.householdFeaturesRules.length > 0) {
     // Family / household-composition signal not already covered by
     // earlier B11001 (added by living/identity/family pills).
     if (!m.includes("B11001_001E")) m.push("B11001_001E");
@@ -884,22 +1243,20 @@ function buildMarginals(draft: DraftState): string[] {
   if (draft.recentlyMoved) {
     m.push("B07003_001E"); // Geographic mobility - total
   }
-  if (draft.housingType.length > 0) {
+  if (draft.housingTypeRules.length > 0) {
     m.push("B25024_001E"); // Units in structure - total
   }
   if (
-    draft.yearBuiltRange[0] > YRBLT_MIN ||
-    draft.yearBuiltRange[1] < YRBLT_MAX
+    draft.yearBuiltRules.length > 0
   ) {
     m.push("B25034_001E"); // Year built - total
   }
   if (
-    draft.vehiclesRange[0] > VEH_MIN ||
-    draft.vehiclesRange[1] < VEH_MAX
+    draft.vehiclesRules.length > 0
   ) {
     m.push("B25044_001E"); // Vehicles - total
   }
-  if (draft.heatingFuel.length > 0) {
+  if (draft.heatingFuelRules.length > 0) {
     m.push("B25040_001E"); // Heating fuel - total
   }
   if (draft.veteran) {
@@ -1045,7 +1402,7 @@ function Accordion({
       </button>
       {open && (
         <div
-          style={{ display: "flex", flexDirection: "column", gap: 12 }}
+          style={{ display: "flex", flexDirection: "column", gap: 22 }}
         >
           {children}
         </div>
@@ -1074,28 +1431,34 @@ function BinaryToggle({
   );
 }
 
-// Section wrapper: label on the left, "any" reset button on the right.
-// "any" is greyed out when the section is already at its default
-// (= the section already means "doesn't matter for this dimension")
-// and underlined / clickable when the section has been modified.
+// Section wrapper: single-column layout. The header row carries the
+// label on the left and the "any" reset on the right. When the
+// section is modified, a compact horizontal ImportancePicker appears
+// inline between them so tier-setting lives on the same line as the
+// section identity and the reset. The picker is per-section, set
+// independently for every Section call site via controlKey.
 function Section({
   label,
+  controlKey,
   isModified,
   onReset,
   children,
 }: {
   label: string;
+  controlKey: string;
   isModified: boolean;
   onReset: () => void;
   children: React.ReactNode;
 }) {
+  const { tiers, setTier } = useContext(TiersContext);
+  const tier = tiers[controlKey];
   return (
     <div>
       <div
         style={{
           display: "flex",
-          justifyContent: "space-between",
-          alignItems: "baseline",
+          alignItems: "center",
+          gap: 10,
           marginBottom: 4,
         }}
       >
@@ -1104,13 +1467,201 @@ function Section({
             fontSize: 11,
             color: "#6a7283",
             fontFamily: monoFont,
+            flexShrink: 0,
+          }}
+        >
+          {label}
+        </span>
+        <div
+          style={{
+            marginLeft: "auto",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            flexShrink: 0,
+          }}
+        >
+          <ImportancePicker
+            value={tier ?? DEFAULT_TIER}
+            onChange={(t) => setTier(controlKey, t)}
+            disabled={!isModified}
+          />
+          <button
+            type="button"
+            onClick={onReset}
+            disabled={!isModified}
+            style={{
+              background: "transparent",
+              border: "none",
+              cursor: isModified ? "pointer" : "default",
+              fontSize: 11,
+              color: isModified ? "#6a7283" : "#d1d5db",
+              fontFamily: monoFont,
+              padding: 0,
+              textDecoration: isModified ? "underline" : "none",
+              flexShrink: 0,
+            }}
+          >
+            clear
+          </button>
+        </div>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// Compact horizontal four-tier picker. Always rendered in the
+// Section header but visually muted when the section is unmodified so
+// it teaches the model without dominating the row. Labels collapse to
+// numeric weights (½× / 1× / 2×) plus a "▣" for the required hard
+// gate; hover tooltips surface the verbal meaning for users who want
+// it. "required" stays visually distinct because it runs a logical
+// filter under the hood, not a weight multiplier.
+function ImportancePicker({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: Tier;
+  onChange: (t: Tier) => void;
+  disabled: boolean;
+}) {
+  const options: { tier: Tier; label: string; title: string }[] = [
+    { tier: "low", label: "½×", title: "a little important (weight ×0.5)" },
+    { tier: "med", label: "1×", title: "important (weight ×1)" },
+    { tier: "high", label: "2×", title: "very important (weight ×2)" },
+    { tier: "required", label: "🔒", title: "required (hard gate)" },
+  ];
+  return (
+    <div
+      style={{
+        display: "inline-flex",
+        flexShrink: 0,
+        flexWrap: "nowrap",
+        gap: 2,
+        opacity: disabled ? 0.3 : 1,
+        transition: "opacity 120ms",
+        verticalAlign: "middle",
+      }}
+    >
+      {options.map((opt) => {
+        const active = !disabled && opt.tier === value;
+        const isRequired = opt.tier === "required";
+        return (
+          <button
+            key={opt.tier}
+            type="button"
+            onClick={() => !disabled && onChange(opt.tier)}
+            disabled={disabled}
+            title={opt.title}
+            style={{
+              width: 32,
+              height: 22,
+              padding: 0,
+              boxSizing: "border-box",
+              flexShrink: 0,
+              borderRadius: 6,
+              border: active
+                ? "1px solid #1a1f2e"
+                : "1px solid rgba(0,0,0,0.12)",
+              background: active
+                ? isRequired
+                  ? "#1a1f2e"
+                  : "#5468d8"
+                : "transparent",
+              color: active ? "white" : "#6a7283",
+              fontSize: 10,
+              fontFamily: monoFont,
+              cursor: disabled ? "default" : "pointer",
+              lineHeight: 1,
+              textAlign: "center",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Multi-rule wrapper for range-slider fields. Renders the section
+// header (label on the left, "clear" reset on the right), one row per
+// active rule (range slider + per-rule importance picker + per-rule
+// remove button), and an "+ add another" affordance.
+//
+// At-most-one-required enforcement: when a rule's tier is set to
+// "required", any sibling rule that was already "required" is demoted
+// to "med". This keeps the per-field constraint (multiple required
+// entries on the same field would intersect rather than union) without
+// blocking the user mid-interaction.
+function MultiRangeSection({
+  label,
+  rules,
+  onChange,
+  min,
+  max,
+  step,
+  format,
+  defaultRange,
+  addLabel,
+}: {
+  label: string;
+  rules: RangeRule[];
+  onChange: (rules: RangeRule[]) => void;
+  min: number;
+  max: number;
+  step?: number;
+  format: (n: number) => string;
+  defaultRange: [number, number];
+  addLabel: string;
+}) {
+  const isModified = rules.length > 0;
+  const setRuleTier = (idx: number, tier: Tier) => {
+    onChange(
+      rules.map((r, i) => {
+        if (i === idx) return { ...r, tier };
+        if (tier === "required" && r.tier === "required") {
+          return { ...r, tier: DEFAULT_TIER };
+        }
+        return r;
+      }),
+    );
+  };
+  const setRuleRange = (idx: number, range: [number, number]) => {
+    onChange(rules.map((r, i) => (i === idx ? { ...r, range } : r)));
+  };
+  const removeRule = (idx: number) =>
+    onChange(rules.filter((_, i) => i !== idx));
+  const addRule = () =>
+    onChange([...rules, { range: defaultRange, tier: DEFAULT_TIER }]);
+  return (
+    <div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          marginBottom: 4,
+        }}
+      >
+        <span
+          style={{
+            fontSize: 11,
+            color: "#6a7283",
+            fontFamily: monoFont,
+            flexShrink: 0,
           }}
         >
           {label}
         </span>
         <button
           type="button"
-          onClick={onReset}
+          onClick={() => onChange([])}
           disabled={!isModified}
           style={{
             background: "transparent",
@@ -1121,12 +1672,354 @@ function Section({
             fontFamily: monoFont,
             padding: 0,
             textDecoration: isModified ? "underline" : "none",
+            marginLeft: "auto",
+            flexShrink: 0,
           }}
         >
-          any
+          clear
         </button>
       </div>
-      {children}
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+          }}
+        >
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <RangeSlider
+              min={min}
+              max={max}
+              step={step}
+              value={rules[0]?.range ?? defaultRange}
+              onChange={(v) => {
+                if (rules.length === 0) {
+                  onChange([{ range: v, tier: DEFAULT_TIER }]);
+                } else {
+                  setRuleRange(0, v);
+                }
+              }}
+              format={format}
+            />
+          </div>
+          {isModified && (
+            <>
+              <ImportancePicker
+                value={rules[0].tier}
+                onChange={(t) => setRuleTier(0, t)}
+                disabled={false}
+              />
+              {rules.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => removeRule(0)}
+                  aria-label="remove rule"
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    cursor: "pointer",
+                    fontSize: 14,
+                    color: "#9ca3af",
+                    padding: "0 4px",
+                    lineHeight: 1,
+                    flexShrink: 0,
+                  }}
+                >
+                  ×
+                </button>
+              )}
+            </>
+          )}
+        </div>
+        {rules.slice(1).map((rule, i) => {
+          const idx = i + 1;
+          return (
+            <div
+              key={idx}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <RangeSlider
+                  min={min}
+                  max={max}
+                  step={step}
+                  value={rule.range}
+                  onChange={(v) => setRuleRange(idx, v)}
+                  format={format}
+                />
+              </div>
+              <ImportancePicker
+                value={rule.tier}
+                onChange={(t) => setRuleTier(idx, t)}
+                disabled={false}
+              />
+              <button
+                type="button"
+                onClick={() => removeRule(idx)}
+                aria-label="remove rule"
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                  fontSize: 14,
+                  color: "#9ca3af",
+                  padding: "0 4px",
+                  lineHeight: 1,
+                  flexShrink: 0,
+                }}
+              >
+                ×
+              </button>
+            </div>
+          );
+        })}
+        {isModified && (
+          <button
+            type="button"
+            onClick={addRule}
+            style={{
+              background: "transparent",
+              border: "1px dashed rgba(0,0,0,0.18)",
+              borderRadius: 6,
+              padding: "4px 10px",
+              cursor: "pointer",
+              fontSize: 11,
+              color: "#6a7283",
+              fontFamily: monoFont,
+              alignSelf: "flex-start",
+            }}
+          >
+            {addLabel}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Generic pill-rule shape, used by every pill-based MultiPillSection
+// in the builder. Same idea as RangeRule but with a list of selected
+// pill names instead of a numeric range.
+interface PillRule<T extends string> {
+  pills: T[];
+  tier: Tier;
+}
+
+// Multi-rule wrapper for pill-group fields. First pill group is always
+// visible; clicking a pill on the empty state creates rule 0. Each
+// rule renders as a pill group with its own importance picker on the
+// row below, right-aligned. "+ add another" spawns a fresh empty pill
+// group beneath. Mirrors the MultiRangeSection visual rhythm so the
+// builder stays internally consistent.
+//
+// At-most-one-required: setting any rule's tier to "required" demotes
+// any sibling rule that was already required to "med", same constraint
+// as for ranges.
+function MultiPillSection<T extends string>({
+  label,
+  options,
+  rules,
+  onChange,
+  addLabel,
+}: {
+  label: string;
+  options: T[];
+  rules: PillRule<T>[];
+  onChange: (r: PillRule<T>[]) => void;
+  addLabel: string;
+}) {
+  const isModified = rules.length > 0;
+  const firstHasPills =
+    rules.length > 0 && rules[0].pills.length > 0;
+  const setRuleTier = (idx: number, tier: Tier) => {
+    onChange(
+      rules.map((r, i) => {
+        if (i === idx) return { ...r, tier };
+        if (tier === "required" && r.tier === "required") {
+          return { ...r, tier: DEFAULT_TIER };
+        }
+        return r;
+      }),
+    );
+  };
+  const setRulePills = (idx: number, pills: T[]) => {
+    onChange(rules.map((r, i) => (i === idx ? { ...r, pills } : r)));
+  };
+  const removeRule = (idx: number) =>
+    onChange(rules.filter((_, i) => i !== idx));
+  const addRule = () =>
+    onChange([...rules, { pills: [], tier: DEFAULT_TIER }]);
+
+  // First-row pill change handler: creates rule 0 on first selection,
+  // collapses back to no rules if user deselects everything in the only
+  // rule. Beyond that, defers to setRulePills.
+  const handleFirstChange = (newPills: T[]) => {
+    if (rules.length === 0) {
+      if (newPills.length === 0) return;
+      onChange([{ pills: newPills, tier: DEFAULT_TIER }]);
+      return;
+    }
+    if (rules.length === 1 && newPills.length === 0) {
+      onChange([]);
+      return;
+    }
+    setRulePills(0, newPills);
+  };
+
+  return (
+    <div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          marginBottom: 4,
+        }}
+      >
+        <span
+          style={{
+            fontSize: 11,
+            color: "#6a7283",
+            fontFamily: monoFont,
+            flexShrink: 0,
+          }}
+        >
+          {label}
+        </span>
+        <button
+          type="button"
+          onClick={() => onChange([])}
+          disabled={!isModified}
+          style={{
+            background: "transparent",
+            border: "none",
+            cursor: isModified ? "pointer" : "default",
+            fontSize: 11,
+            color: isModified ? "#6a7283" : "#d1d5db",
+            fontFamily: monoFont,
+            padding: 0,
+            textDecoration: isModified ? "underline" : "none",
+            marginLeft: "auto",
+            flexShrink: 0,
+          }}
+        >
+          clear
+        </button>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 10,
+          }}
+        >
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <PillGroup<T>
+              options={options}
+              value={rules[0]?.pills ?? []}
+              onChange={handleFirstChange}
+            />
+          </div>
+          {firstHasPills && (
+            <>
+              <ImportancePicker
+                value={rules[0].tier}
+                onChange={(t) => setRuleTier(0, t)}
+                disabled={false}
+              />
+              {rules.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => removeRule(0)}
+                  aria-label="remove rule"
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    cursor: "pointer",
+                    fontSize: 14,
+                    color: "#9ca3af",
+                    padding: "0 4px",
+                    lineHeight: 1,
+                    flexShrink: 0,
+                  }}
+                >
+                  ×
+                </button>
+              )}
+            </>
+          )}
+        </div>
+        {rules.slice(1).map((rule, i) => {
+          const idx = i + 1;
+          return (
+            <div
+              key={idx}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 10,
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <PillGroup<T>
+                  options={options}
+                  value={rule.pills}
+                  onChange={(v) => setRulePills(idx, v)}
+                />
+              </div>
+              <ImportancePicker
+                value={rule.tier}
+                onChange={(t) => setRuleTier(idx, t)}
+                disabled={false}
+              />
+              <button
+                type="button"
+                onClick={() => removeRule(idx)}
+                aria-label="remove rule"
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                  fontSize: 14,
+                  color: "#9ca3af",
+                  padding: "0 4px",
+                  lineHeight: 1,
+                  flexShrink: 0,
+                }}
+              >
+                ×
+              </button>
+            </div>
+          );
+        })}
+        {firstHasPills && (
+          <button
+            type="button"
+            onClick={addRule}
+            style={{
+              background: "transparent",
+              border: "1px dashed rgba(0,0,0,0.18)",
+              borderRadius: 6,
+              padding: "4px 10px",
+              cursor: "pointer",
+              fontSize: 11,
+              color: "#6a7283",
+              fontFamily: monoFont,
+              alignSelf: "flex-start",
+            }}
+          >
+            {addLabel}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -1294,7 +2187,13 @@ export default function CohortBuilder({ onCohort, hasCohort }: Props) {
   const update = <K extends keyof DraftState>(k: K, v: DraftState[K]) =>
     setDraft((d) => ({ ...d, [k]: v }));
 
+  const setTier = (key: string, tier: Tier) =>
+    setDraft((d) => ({ ...d, tiers: { ...d.tiers, [key]: tier } }));
+
   const vector = buildVector(draft);
+  // No required-gate constraint: cohorts can be pure soft-signal
+  // scoring. Membership is then determined entirely by whether the
+  // weighted fit score clears the cohort threshold τ.
   const canSave = draft.title.trim().length > 0 && vector.length > 0;
 
   const handleSave = async () => {
@@ -1375,10 +2274,12 @@ export default function CohortBuilder({ onCohort, hasCohort }: Props) {
             zIndex: 1000,
           }}
         >
+          <TiersContext.Provider value={{ tiers: draft.tiers, setTier }}>
           <div
             onClick={(e) => e.stopPropagation()}
             style={{
-              width: 560,
+              width: 600,
+              maxWidth: "94vw",
               maxHeight: "85vh",
               // Flex column with overflow:hidden so the rounded corners
               // clip cleanly; only the middle body scrolls, header and
@@ -1473,28 +2374,19 @@ export default function CohortBuilder({ onCohort, hasCohort }: Props) {
               </div>
 
               <Accordion label="demographics">
-                <Section
+                <MultiRangeSection
                   label="age"
-                  isModified={
-                    draft.ageRange[0] > AGE_MIN || draft.ageRange[1] < AGE_MAX
-                  }
-                  onReset={() => update("ageRange", [AGE_MIN, AGE_MAX])}
-                >
-                  <RangeSlider
-                    min={AGE_MIN}
-                    max={AGE_MAX}
-                    value={draft.ageRange}
-                    onChange={(v) => update("ageRange", v)}
-                    format={fmtAge}
-                  />
-                </Section>
-                <Section
+                  rules={draft.ageRules}
+                  onChange={(r) => update("ageRules", r)}
+                  min={AGE_MIN}
+                  max={AGE_MAX}
+                  format={fmtAge}
+                  defaultRange={[AGE_MIN, AGE_MAX]}
+                  addLabel="+ add another age range"
+                />
+                <MultiPillSection<RacePill>
                   label="race"
-                  isModified={draft.race.length > 0}
-                  onReset={() => update("race", [])}
-                >
-                  <PillGroup<RacePill>
-                    options={[
+                  options={[
                       "white",
                       "Black",
                       "Asian",
@@ -1502,34 +2394,27 @@ export default function CohortBuilder({ onCohort, hasCohort }: Props) {
                       "Indigenous",
                       "Pacific Islander",
                     ]}
-                    value={draft.race}
-                    onChange={(v) => update("race", v)}
-                  />
-                </Section>
-                <Section
+                  rules={draft.raceRules}
+                  onChange={(r) => update("raceRules", r)}
+                  addLabel="+ add another race"
+                />
+                <MultiPillSection<SexPill>
                   label="sex"
-                  isModified={draft.sex.length > 0}
-                  onReset={() => update("sex", [])}
-                >
-                  <PillGroup<SexPill>
-                    options={["female", "male"]}
-                    value={draft.sex}
-                    onChange={(v) => update("sex", v)}
-                  />
-                </Section>
-                <Section
+                  options={["female", "male"]}
+                  rules={draft.sexRules}
+                  onChange={(r) => update("sexRules", r)}
+                  addLabel="+ add another sex"
+                />
+                <MultiPillSection<CitizenshipPill>
                   label="citizenship"
-                  isModified={draft.citizenship.length > 0}
-                  onReset={() => update("citizenship", [])}
-                >
-                  <PillGroup<CitizenshipPill>
-                    options={["native", "naturalized", "non-citizen"]}
-                    value={draft.citizenship}
-                    onChange={(v) => update("citizenship", v)}
-                  />
-                </Section>
+                  options={["native", "naturalized", "non-citizen"]}
+                  rules={draft.citizenshipRules}
+                  onChange={(r) => update("citizenshipRules", r)}
+                  addLabel="+ add another citizenship"
+                />
                 <Section
                   label="mobility"
+                  controlKey="mobility"
                   isModified={draft.recentlyMoved}
                   onReset={() => update("recentlyMoved", false)}
                 >
@@ -1542,246 +2427,122 @@ export default function CohortBuilder({ onCohort, hasCohort }: Props) {
               </Accordion>
 
               <Accordion label="family">
-                <Section
+                <MultiPillSection<IdentityPill>
                   label="marital status"
-                  isModified={draft.identity.length > 0}
-                  onReset={() => update("identity", [])}
-                >
-                  <PillGroup<IdentityPill>
-                    options={["married", "divorced", "widowed"]}
-                    value={draft.identity}
-                    onChange={(v) => update("identity", v)}
-                  />
-                </Section>
-                <Section
+                  options={["married", "divorced", "widowed"]}
+                  rules={draft.identityRules}
+                  onChange={(r) => update("identityRules", r)}
+                  addLabel="+ add another marital status"
+                />
+                <MultiRangeSection
                   label="children"
-                  isModified={
-                    draft.kidsRange[0] > KIDS_MIN ||
-                    draft.kidsRange[1] < KIDS_MAX
-                  }
-                  onReset={() => update("kidsRange", [KIDS_MIN, KIDS_MAX])}
-                >
-                  <RangeSlider
-                    min={KIDS_MIN}
-                    max={KIDS_MAX}
-                    value={draft.kidsRange}
-                    onChange={(v) => update("kidsRange", v)}
-                    format={fmtKids}
-                  />
-                </Section>
-                <Section
+                  rules={draft.kidsRules}
+                  onChange={(r) => update("kidsRules", r)}
+                  min={KIDS_MIN}
+                  max={KIDS_MAX}
+                  format={fmtKids}
+                  defaultRange={[KIDS_MIN, KIDS_MAX]}
+                  addLabel="+ add another children range"
+                />
+                <MultiPillSection<Living>
                   label="living arrangement"
-                  isModified={draft.living.length > 0}
-                  onReset={() => update("living", [])}
-                >
-                  <PillGroup<Living>
-                    options={["single", "family"]}
-                    value={draft.living}
-                    onChange={(v) => update("living", v)}
-                  />
-                </Section>
-                <Section
+                  options={["single", "family"]}
+                  rules={draft.livingRules}
+                  onChange={(r) => update("livingRules", r)}
+                  addLabel="+ add another living arrangement"
+                />
+                <MultiPillSection<HouseholdFeaturesPill>
                   label="household features"
-                  isModified={
-                    draft.queerHousehold ||
-                    draft.fertility ||
-                    draft.multigenerational ||
-                    draft.seniorsInHome ||
-                    draft.unmarriedPartner ||
-                    draft.grandparentCaretaker
-                  }
-                  onReset={() =>
-                    setDraft((d) => ({
-                      ...d,
-                      queerHousehold: false,
-                      fertility: false,
-                      multigenerational: false,
-                      seniorsInHome: false,
-                      unmarriedPartner: false,
-                      grandparentCaretaker: false,
-                    }))
-                  }
-                >
-                  <PillGroup<string>
-                    options={[
-                      "queer",
-                      "new parent",
-                      "multigen",
-                      "elder in home",
-                      "unmarried partner",
-                      "raising grandchild",
-                    ]}
-                    value={[
-                      draft.queerHousehold && "queer",
-                      draft.fertility && "new parent",
-                      draft.multigenerational && "multigen",
-                      draft.seniorsInHome && "elder in home",
-                      draft.unmarriedPartner && "unmarried partner",
-                      draft.grandparentCaretaker && "raising grandchild",
-                    ].filter((v): v is string => typeof v === "string")}
-                    onChange={(active) =>
-                      setDraft((d) => ({
-                        ...d,
-                        queerHousehold: active.includes("queer"),
-                        fertility: active.includes("new parent"),
-                        multigenerational: active.includes("multigen"),
-                        seniorsInHome: active.includes("elder in home"),
-                        unmarriedPartner: active.includes("unmarried partner"),
-                        grandparentCaretaker: active.includes(
-                          "raising grandchild",
-                        ),
-                      }))
-                    }
-                  />
-                </Section>
+                  options={[
+                    "queer",
+                    "new parent",
+                    "multigen",
+                    "elder in home",
+                    "unmarried partner",
+                    "raising grandchild",
+                  ]}
+                  rules={draft.householdFeaturesRules}
+                  onChange={(r) => update("householdFeaturesRules", r)}
+                  addLabel="+ add another household features rule"
+                />
               </Accordion>
 
               <Accordion label="language & education">
-                <Section
+                <MultiPillSection<LanguageFlagsPill>
                   label="language flags"
-                  isModified={
-                    draft.speaksNonEnglish || draft.limitedEnglishHousehold
-                  }
-                  onReset={() =>
-                    setDraft((d) => ({
-                      ...d,
-                      speaksNonEnglish: false,
-                      limitedEnglishHousehold: false,
-                    }))
-                  }
-                >
-                  <PillGroup<string>
-                    options={["non-English home", "limited-English household"]}
-                    value={[
-                      draft.speaksNonEnglish && "non-English home",
-                      draft.limitedEnglishHousehold &&
-                        "limited-English household",
-                    ].filter((v): v is string => typeof v === "string")}
-                    onChange={(active) =>
-                      setDraft((d) => ({
-                        ...d,
-                        speaksNonEnglish: active.includes("non-English home"),
-                        limitedEnglishHousehold: active.includes(
-                          "limited-English household",
-                        ),
-                      }))
-                    }
-                  />
-                </Section>
-                <Section
+                  options={["non-English home", "limited-English household"]}
+                  rules={draft.languageFlagsRules}
+                  onChange={(r) => update("languageFlagsRules", r)}
+                  addLabel="+ add another language flags rule"
+                />
+                <MultiRangeSection
                   label="English fluency"
-                  isModified={
-                    draft.englishRange[0] > ENG_MIN ||
-                    draft.englishRange[1] < ENG_MAX
-                  }
-                  onReset={() => update("englishRange", [ENG_MIN, ENG_MAX])}
-                >
-                  <RangeSlider
-                    min={ENG_MIN}
-                    max={ENG_MAX}
-                    value={draft.englishRange}
-                    onChange={(v) => update("englishRange", v)}
-                    format={fmtEngConcept}
-                  />
-                </Section>
-                <Section
+                  rules={draft.englishRules}
+                  onChange={(r) => update("englishRules", r)}
+                  min={ENG_MIN}
+                  max={ENG_MAX}
+                  format={fmtEngConcept}
+                  defaultRange={[ENG_MIN, ENG_MAX]}
+                  addLabel="+ add another English fluency range"
+                />
+                <MultiRangeSection
                   label="education"
-                  isModified={
-                    draft.educationRange[0] > SCHL_MIN ||
-                    draft.educationRange[1] < SCHL_MAX
-                  }
-                  onReset={() =>
-                    update("educationRange", [SCHL_MIN, SCHL_MAX])
-                  }
-                >
-                  <RangeSlider
-                    min={SCHL_MIN}
-                    max={SCHL_MAX}
-                    value={draft.educationRange}
-                    onChange={(v) => update("educationRange", v)}
-                    format={fmtSchlConcept}
-                  />
-                </Section>
+                  rules={draft.educationRules}
+                  onChange={(r) => update("educationRules", r)}
+                  min={SCHL_MIN}
+                  max={SCHL_MAX}
+                  format={fmtSchlConcept}
+                  defaultRange={[SCHL_MIN, SCHL_MAX]}
+                  addLabel="+ add another education tier"
+                />
               </Accordion>
 
               <Accordion label="money & work">
-                <Section
+                <MultiRangeSection
                   label="income (household)"
-                  isModified={
-                    draft.incomeRange[0] > INCOME_MIN ||
-                    draft.incomeRange[1] < INCOME_MAX
-                  }
-                  onReset={() =>
-                    update("incomeRange", [INCOME_MIN, INCOME_MAX])
-                  }
-                >
-                  <RangeSlider
-                    min={INCOME_MIN}
-                    max={INCOME_MAX}
-                    step={INCOME_STEP}
-                    value={draft.incomeRange}
-                    onChange={(v) => update("incomeRange", v)}
-                    format={fmtIncomeConcept}
-                  />
-                </Section>
-                <Section
+                  rules={draft.incomeRules}
+                  onChange={(r) => update("incomeRules", r)}
+                  min={INCOME_MIN}
+                  max={INCOME_MAX}
+                  step={INCOME_STEP}
+                  format={fmtIncomeConcept}
+                  defaultRange={[INCOME_MIN, INCOME_MAX]}
+                  addLabel="+ add another income range"
+                />
+                <MultiRangeSection
                   label="family income"
-                  isModified={
-                    draft.familyIncomeRange[0] > FAMILY_INCOME_MIN ||
-                    draft.familyIncomeRange[1] < FAMILY_INCOME_MAX
-                  }
-                  onReset={() =>
-                    update("familyIncomeRange", [
-                      FAMILY_INCOME_MIN,
-                      FAMILY_INCOME_MAX,
-                    ])
-                  }
-                >
-                  <RangeSlider
-                    min={FAMILY_INCOME_MIN}
-                    max={FAMILY_INCOME_MAX}
-                    step={FAMILY_INCOME_STEP}
-                    value={draft.familyIncomeRange}
-                    onChange={(v) => update("familyIncomeRange", v)}
-                    format={fmtIncomeConcept}
-                  />
-                </Section>
-                <Section
+                  rules={draft.familyIncomeRules}
+                  onChange={(r) => update("familyIncomeRules", r)}
+                  min={FAMILY_INCOME_MIN}
+                  max={FAMILY_INCOME_MAX}
+                  step={FAMILY_INCOME_STEP}
+                  format={fmtIncomeConcept}
+                  defaultRange={[FAMILY_INCOME_MIN, FAMILY_INCOME_MAX]}
+                  addLabel="+ add another family income range"
+                />
+                <MultiRangeSection
                   label="hours per week"
-                  isModified={
-                    draft.hoursRange[0] > WKHP_MIN ||
-                    draft.hoursRange[1] < WKHP_MAX
-                  }
-                  onReset={() => update("hoursRange", [WKHP_MIN, WKHP_MAX])}
-                >
-                  <RangeSlider
-                    min={WKHP_MIN}
-                    max={WKHP_MAX}
-                    value={draft.hoursRange}
-                    onChange={(v) => update("hoursRange", v)}
-                    format={fmtHours}
-                  />
-                </Section>
-                <Section
+                  rules={draft.hoursRules}
+                  onChange={(r) => update("hoursRules", r)}
+                  min={WKHP_MIN}
+                  max={WKHP_MAX}
+                  format={fmtHours}
+                  defaultRange={[WKHP_MIN, WKHP_MAX]}
+                  addLabel="+ add another hours range"
+                />
+                <MultiRangeSection
                   label="poverty status"
-                  isModified={
-                    draft.povertyRange[0] > POVPIP_MIN ||
-                    draft.povertyRange[1] < POVPIP_MAX
-                  }
-                  onReset={() =>
-                    update("povertyRange", [POVPIP_MIN, POVPIP_MAX])
-                  }
-                >
-                  <RangeSlider
-                    min={POVPIP_MIN}
-                    max={POVPIP_MAX}
-                    value={draft.povertyRange}
-                    onChange={(v) => update("povertyRange", v)}
-                    format={fmtPovertyConcept}
-                  />
-                </Section>
+                  rules={draft.povertyRules}
+                  onChange={(r) => update("povertyRules", r)}
+                  min={POVPIP_MIN}
+                  max={POVPIP_MAX}
+                  format={fmtPovertyConcept}
+                  defaultRange={[POVPIP_MIN, POVPIP_MAX]}
+                  addLabel="+ add another poverty range"
+                />
                 <Section
                   label="food stamps"
+                  controlKey="food_stamps"
                   isModified={draft.foodStamps}
                   onReset={() => update("foodStamps", false)}
                 >
@@ -1791,331 +2552,177 @@ export default function CohortBuilder({ onCohort, hasCohort }: Props) {
                     onChange={(v) => update("foodStamps", v)}
                   />
                 </Section>
-                <Section
+                <MultiPillSection<ClassOfWorkerPill>
                   label="class of worker"
-                  isModified={draft.classOfWorker.length > 0}
-                  onReset={() => update("classOfWorker", [])}
-                >
-                  <PillGroup<ClassOfWorkerPill>
-                    options={["private", "government", "self-employed"]}
-                    value={draft.classOfWorker}
-                    onChange={(v) => update("classOfWorker", v)}
-                  />
-                </Section>
+                  options={["private", "government", "self-employed"]}
+                  rules={draft.classOfWorkerRules}
+                  onChange={(r) => update("classOfWorkerRules", r)}
+                  addLabel="+ add another class of worker"
+                />
               </Accordion>
 
               <Accordion label="disability">
-                <Section
+                <MultiPillSection<DisabilityPill>
                   label="disability type"
-                  isModified={draft.disability.length > 0}
-                  onReset={() => update("disability", [])}
-                >
-                  <PillGroup<DisabilityPill>
-                    options={[
-                      "physical",
-                      "cognitive",
-                      "sensory",
-                      "independent",
-                    ]}
-                    value={draft.disability}
-                    onChange={(v) => update("disability", v)}
-                  />
-                </Section>
+                  options={["physical", "cognitive", "sensory", "independent"]}
+                  rules={draft.disabilityRules}
+                  onChange={(r) => update("disabilityRules", r)}
+                  addLabel="+ add another disability type"
+                />
               </Accordion>
 
               <Accordion label="health insurance">
-                <Section
+                <MultiPillSection<InsuranceCoveragePill>
                   label="coverage"
-                  isModified={
-                    draft.hasInsurance ||
-                    draft.employerInsurance ||
-                    draft.medicare ||
-                    draft.medicaid ||
-                    draft.vaInsurance
-                  }
-                  onReset={() =>
-                    setDraft((d) => ({
-                      ...d,
-                      hasInsurance: false,
-                      employerInsurance: false,
-                      medicare: false,
-                      medicaid: false,
-                      vaInsurance: false,
-                    }))
-                  }
-                >
-                  <PillGroup<string>
-                    options={[
-                      "insured",
-                      "employer",
-                      "Medicare",
-                      "Medi-Cal",
-                      "VA",
-                    ]}
-                    value={[
-                      draft.hasInsurance && "insured",
-                      draft.employerInsurance && "employer",
-                      draft.medicare && "Medicare",
-                      draft.medicaid && "Medi-Cal",
-                      draft.vaInsurance && "VA",
-                    ].filter((v): v is string => typeof v === "string")}
-                    onChange={(active) =>
-                      setDraft((d) => ({
-                        ...d,
-                        hasInsurance: active.includes("insured"),
-                        employerInsurance: active.includes("employer"),
-                        medicare: active.includes("Medicare"),
-                        medicaid: active.includes("Medi-Cal"),
-                        vaInsurance: active.includes("VA"),
-                      }))
-                    }
-                  />
-                </Section>
+                  options={["insured", "employer", "Medicare", "Medi-Cal", "VA"]}
+                  rules={draft.insuranceCoverageRules}
+                  onChange={(r) => update("insuranceCoverageRules", r)}
+                  addLabel="+ add another coverage rule"
+                />
               </Accordion>
 
               <Accordion label="housing">
-                <Section
+                <MultiPillSection<HousingPill>
                   label="tenure"
-                  isModified={draft.housing.length > 0}
-                  onReset={() => update("housing", [])}
-                >
-                  <PillGroup<HousingPill>
-                    options={["owns", "rents"]}
-                    value={draft.housing}
-                    onChange={(v) => update("housing", v)}
-                  />
-                </Section>
-                <Section
+                  options={["owns", "rents"]}
+                  rules={draft.housingRules}
+                  onChange={(r) => update("housingRules", r)}
+                  addLabel="+ add another tenure"
+                />
+                <MultiPillSection<HousingTypePill>
                   label="housing type"
-                  isModified={draft.housingType.length > 0}
-                  onReset={() => update("housingType", [])}
-                >
-                  <PillGroup<HousingTypePill>
-                    options={["mobile home", "single-family", "apartment"]}
-                    value={draft.housingType}
-                    onChange={(v) => update("housingType", v)}
-                  />
-                </Section>
-                <Section
+                  options={["mobile home", "single-family", "apartment"]}
+                  rules={draft.housingTypeRules}
+                  onChange={(r) => update("housingTypeRules", r)}
+                  addLabel="+ add another housing type"
+                />
+                <MultiRangeSection
                   label="year built"
-                  isModified={
-                    draft.yearBuiltRange[0] > YRBLT_MIN ||
-                    draft.yearBuiltRange[1] < YRBLT_MAX
-                  }
-                  onReset={() =>
-                    update("yearBuiltRange", [YRBLT_MIN, YRBLT_MAX])
-                  }
-                >
-                  <RangeSlider
-                    min={YRBLT_MIN}
-                    max={YRBLT_MAX}
-                    value={draft.yearBuiltRange}
-                    onChange={(v) => update("yearBuiltRange", v)}
-                    format={fmtYear}
-                  />
-                </Section>
-                <Section
+                  rules={draft.yearBuiltRules}
+                  onChange={(r) => update("yearBuiltRules", r)}
+                  min={YRBLT_MIN}
+                  max={YRBLT_MAX}
+                  format={fmtYear}
+                  defaultRange={[YRBLT_MIN, YRBLT_MAX]}
+                  addLabel="+ add another year built range"
+                />
+                <MultiRangeSection
                   label="bedrooms"
-                  isModified={
-                    draft.bedroomsRange[0] > BDSP_MIN ||
-                    draft.bedroomsRange[1] < BDSP_MAX
-                  }
-                  onReset={() =>
-                    update("bedroomsRange", [BDSP_MIN, BDSP_MAX])
-                  }
-                >
-                  <RangeSlider
-                    min={BDSP_MIN}
-                    max={BDSP_MAX}
-                    value={draft.bedroomsRange}
-                    onChange={(v) => update("bedroomsRange", v)}
-                    format={fmtCount}
-                  />
-                </Section>
-                <Section
+                  rules={draft.bedroomsRules}
+                  onChange={(r) => update("bedroomsRules", r)}
+                  min={BDSP_MIN}
+                  max={BDSP_MAX}
+                  format={fmtCount}
+                  defaultRange={[BDSP_MIN, BDSP_MAX]}
+                  addLabel="+ add another bedrooms range"
+                />
+                <MultiRangeSection
                   label="vehicles"
-                  isModified={
-                    draft.vehiclesRange[0] > VEH_MIN ||
-                    draft.vehiclesRange[1] < VEH_MAX
-                  }
-                  onReset={() =>
-                    update("vehiclesRange", [VEH_MIN, VEH_MAX])
-                  }
-                >
-                  <RangeSlider
-                    min={VEH_MIN}
-                    max={VEH_MAX}
-                    value={draft.vehiclesRange}
-                    onChange={(v) => update("vehiclesRange", v)}
-                    format={fmtCount}
-                  />
-                </Section>
-                <Section
+                  rules={draft.vehiclesRules}
+                  onChange={(r) => update("vehiclesRules", r)}
+                  min={VEH_MIN}
+                  max={VEH_MAX}
+                  format={fmtCount}
+                  defaultRange={[VEH_MIN, VEH_MAX]}
+                  addLabel="+ add another vehicles range"
+                />
+                <MultiPillSection<HeatingFuelPill>
                   label="heating fuel"
-                  isModified={draft.heatingFuel.length > 0}
-                  onReset={() => update("heatingFuel", [])}
-                >
-                  <PillGroup<HeatingFuelPill>
-                    options={[
+                  options={[
                       "gas",
-                      "electric",
                       "propane",
-                      "wood",
+                      "electric",
                       "oil",
+                      "wood",
                       "solar",
                     ]}
-                    value={draft.heatingFuel}
-                    onChange={(v) => update("heatingFuel", v)}
-                  />
-                </Section>
-                <Section
+                  rules={draft.heatingFuelRules}
+                  onChange={(r) => update("heatingFuelRules", r)}
+                  addLabel="+ add another heating fuel"
+                />
+                <MultiRangeSection
                   label="home value"
-                  isModified={
-                    draft.propertyValueRange[0] > VALP_MIN ||
-                    draft.propertyValueRange[1] < VALP_MAX
-                  }
-                  onReset={() =>
-                    update("propertyValueRange", [VALP_MIN, VALP_MAX])
-                  }
-                >
-                  <RangeSlider
-                    min={VALP_MIN}
-                    max={VALP_MAX}
-                    step={VALP_STEP}
-                    value={draft.propertyValueRange}
-                    onChange={(v) => update("propertyValueRange", v)}
-                    format={fmtValueConcept}
-                  />
-                </Section>
-                <Section
+                  rules={draft.propertyValueRules}
+                  onChange={(r) => update("propertyValueRules", r)}
+                  min={VALP_MIN}
+                  max={VALP_MAX}
+                  step={VALP_STEP}
+                  format={fmtValueConcept}
+                  defaultRange={[VALP_MIN, VALP_MAX]}
+                  addLabel="+ add another home value range"
+                />
+                <MultiRangeSection
                   label="year moved in"
-                  isModified={
-                    draft.yearMovedRange[0] > MV_MIN ||
-                    draft.yearMovedRange[1] < MV_MAX
-                  }
-                  onReset={() => update("yearMovedRange", [MV_MIN, MV_MAX])}
-                >
-                  <RangeSlider
-                    min={MV_MIN}
-                    max={MV_MAX}
-                    value={draft.yearMovedRange}
-                    onChange={(v) => update("yearMovedRange", v)}
-                    format={fmtMovedConcept}
-                  />
-                </Section>
-                <Section
+                  rules={draft.yearMovedRules}
+                  onChange={(r) => update("yearMovedRules", r)}
+                  min={MV_MIN}
+                  max={MV_MAX}
+                  format={fmtMovedConcept}
+                  defaultRange={[MV_MIN, MV_MAX]}
+                  addLabel="+ add another year moved range"
+                />
+                <MultiRangeSection
                   label="rent burden"
-                  isModified={
-                    draft.rentBurdenRange[0] > GRPIP_MIN ||
-                    draft.rentBurdenRange[1] < GRPIP_MAX
-                  }
-                  onReset={() =>
-                    update("rentBurdenRange", [GRPIP_MIN, GRPIP_MAX])
-                  }
-                >
-                  <RangeSlider
-                    min={GRPIP_MIN}
-                    max={GRPIP_MAX}
-                    value={draft.rentBurdenRange}
-                    onChange={(v) => update("rentBurdenRange", v)}
-                    format={fmtBurdenConcept}
-                  />
-                </Section>
-                <Section
+                  rules={draft.rentBurdenRules}
+                  onChange={(r) => update("rentBurdenRules", r)}
+                  min={GRPIP_MIN}
+                  max={GRPIP_MAX}
+                  format={fmtBurdenConcept}
+                  defaultRange={[GRPIP_MIN, GRPIP_MAX]}
+                  addLabel="+ add another rent burden range"
+                />
+                <MultiRangeSection
                   label="owner cost burden"
-                  isModified={
-                    draft.ownerCostBurdenRange[0] > OCPIP_MIN ||
-                    draft.ownerCostBurdenRange[1] < OCPIP_MAX
-                  }
-                  onReset={() =>
-                    update("ownerCostBurdenRange", [OCPIP_MIN, OCPIP_MAX])
-                  }
-                >
-                  <RangeSlider
-                    min={OCPIP_MIN}
-                    max={OCPIP_MAX}
-                    value={draft.ownerCostBurdenRange}
-                    onChange={(v) => update("ownerCostBurdenRange", v)}
-                    format={fmtBurdenConcept}
-                  />
-                </Section>
+                  rules={draft.ownerCostBurdenRules}
+                  onChange={(r) => update("ownerCostBurdenRules", r)}
+                  min={OCPIP_MIN}
+                  max={OCPIP_MAX}
+                  format={fmtBurdenConcept}
+                  defaultRange={[OCPIP_MIN, OCPIP_MAX]}
+                  addLabel="+ add another owner cost burden range"
+                />
               </Accordion>
 
               <Accordion label="tech">
-                <Section
+                <MultiPillSection<HouseholdTechPill>
                   label="household tech"
-                  isModified={
-                    draft.broadband || draft.laptop || draft.smartphone
-                  }
-                  onReset={() =>
-                    setDraft((d) => ({
-                      ...d,
-                      broadband: false,
-                      laptop: false,
-                      smartphone: false,
-                    }))
-                  }
-                >
-                  <PillGroup<string>
-                    options={["broadband", "laptop", "smartphone"]}
-                    value={[
-                      draft.broadband && "broadband",
-                      draft.laptop && "laptop",
-                      draft.smartphone && "smartphone",
-                    ].filter((v): v is string => typeof v === "string")}
-                    onChange={(active) =>
-                      setDraft((d) => ({
-                        ...d,
-                        broadband: active.includes("broadband"),
-                        laptop: active.includes("laptop"),
-                        smartphone: active.includes("smartphone"),
-                      }))
-                    }
-                  />
-                </Section>
+                  options={["broadband", "laptop", "smartphone"]}
+                  rules={draft.householdTechRules}
+                  onChange={(r) => update("householdTechRules", r)}
+                  addLabel="+ add another tech rule"
+                />
               </Accordion>
 
               <Accordion label="commute">
-                <Section
+                <MultiPillSection<CommuteModePill>
                   label="commute mode"
-                  isModified={draft.commuteMode.length > 0}
-                  onReset={() => update("commuteMode", [])}
-                >
-                  <PillGroup<CommuteModePill>
-                    options={[
+                  options={[
                       "drove alone",
                       "carpool",
                       "transit",
                       "walked or biked",
                       "worked from home",
                     ]}
-                    value={draft.commuteMode}
-                    onChange={(v) => update("commuteMode", v)}
-                  />
-                </Section>
-                <Section
+                  rules={draft.commuteModeRules}
+                  onChange={(r) => update("commuteModeRules", r)}
+                  addLabel="+ add another commute mode"
+                />
+                <MultiRangeSection
                   label="commute time"
-                  isModified={
-                    draft.commuteTimeRange[0] > JWMNP_MIN ||
-                    draft.commuteTimeRange[1] < JWMNP_MAX
-                  }
-                  onReset={() =>
-                    update("commuteTimeRange", [JWMNP_MIN, JWMNP_MAX])
-                  }
-                >
-                  <RangeSlider
-                    min={JWMNP_MIN}
-                    max={JWMNP_MAX}
-                    value={draft.commuteTimeRange}
-                    onChange={(v) => update("commuteTimeRange", v)}
-                    format={fmtMinutes}
-                  />
-                </Section>
+                  rules={draft.commuteTimeRules}
+                  onChange={(r) => update("commuteTimeRules", r)}
+                  min={JWMNP_MIN}
+                  max={JWMNP_MAX}
+                  format={fmtMinutes}
+                  defaultRange={[JWMNP_MIN, JWMNP_MAX]}
+                  addLabel="+ add another commute time range"
+                />
               </Accordion>
 
               <Accordion label="military service">
                 <Section
                   label="veteran"
+                  controlKey="veteran"
                   isModified={draft.veteran}
                   onReset={() => update("veteran", false)}
                 >
@@ -2125,17 +2732,13 @@ export default function CohortBuilder({ onCohort, hasCohort }: Props) {
                     onChange={(v) => update("veteran", v)}
                   />
                 </Section>
-                <Section
+                <MultiPillSection<VeteranEraPill>
                   label="era of service"
-                  isModified={draft.veteranEra.length > 0}
-                  onReset={() => update("veteranEra", [])}
-                >
-                  <PillGroup<VeteranEraPill>
-                    options={["post-9/11", "Gulf", "Vietnam"]}
-                    value={draft.veteranEra}
-                    onChange={(v) => update("veteranEra", v)}
-                  />
-                </Section>
+                  options={["post-9/11", "Gulf", "Vietnam"]}
+                  rules={draft.veteranEraRules}
+                  onChange={(r) => update("veteranEraRules", r)}
+                  addLabel="+ add another era"
+                />
               </Accordion>
 
               {error && (
@@ -2201,6 +2804,7 @@ export default function CohortBuilder({ onCohort, hasCohort }: Props) {
               </button>
             </footer>
           </div>
+          </TiersContext.Provider>
         </div>
       )}
     </>
