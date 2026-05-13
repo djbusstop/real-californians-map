@@ -89,26 +89,10 @@ export default function MapView({ cohorts }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MlMap | null>(null);
   const beforeIdRef = useRef<string | undefined>(undefined);
-  // Form-authored cohorts. Today the cohort builder only creates one
-  // at a time, but the state shape is an array so the legend's
-  // CustomCohorts component can grow to multiple without another
-  // refactor at this layer. CustomCohorts owns the builder modal and
-  // the create/edit triggers; MapView just stores the result of save
-  // / delete here.
-  const [authoredCohorts, setAuthoredCohorts] = useState<Cohort[]>([]);
-
-  // Combined cohort set: library entries plus any form-authored
-  // cohorts. The legend always renders this complete set so the user
-  // can toggle visibility of any cohort.
-  const allCohorts = useMemo<Cohort[]>(
-    () => [...cohorts, ...authoredCohorts],
-    [cohorts, authoredCohorts],
-  );
 
   // Per-cohort selection toggled by clicking legend rows. Default
-  // state: every library cohort selected (= visible). Ephemeral —
-  // not persisted across reloads. Stale ids (e.g., from a previous
-  // authored cohort that was deleted) are harmless: they don't
+  // state: every library cohort selected (= visible).
+  // Not persisted across reloads. Stale ids are harmless: they don't
   // match any current cohort.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(
     () => new Set(cohorts.map((c) => c.id)),
@@ -128,31 +112,10 @@ export default function MapView({ cohorts }: Props) {
   // expression, info bar count) use this filtered set; only the
   // legend itself reads from allCohorts.
   const visibleCohorts = useMemo<Cohort[]>(
-    () => allCohorts.filter((c) => selectedIds.has(c.id)),
-    [allCohorts, selectedIds],
+    () => cohorts.filter((c) => selectedIds.has(c.id)),
+    [cohorts, selectedIds],
   );
 
-  // Saving an authored cohort focuses the map on it (the new cohort
-  // becomes the only selected layer). Editing in place keeps the
-  // selection state on the same id. Deleting restores the full
-  // library selection so the map is never left empty.
-  const saveAuthoredCohort = (c: Omit<Cohort, "color">) => {
-    const withColor: Cohort = { ...c, color: AUTHORED_COHORT_COLOR };
-    setAuthoredCohorts((prev) => {
-      const idx = prev.findIndex((existing) => existing.id === c.id);
-      if (idx >= 0) {
-        const next = [...prev];
-        next[idx] = withColor;
-        return next;
-      }
-      return [...prev, withColor];
-    });
-    setSelectedIds(new Set([c.id]));
-  };
-  const deleteAuthoredCohort = (id: string) => {
-    setAuthoredCohorts((prev) => prev.filter((c) => c.id !== id));
-    setSelectedIds(new Set(cohorts.map((lc) => lc.id)));
-  };
   // Flips true once the basemap has loaded and the dots source/layer
   // are installed. The data-sync effect keys off this so it doesn't try
   // to setData on a source that does not exist yet, and so it doesn't
@@ -365,10 +328,7 @@ export default function MapView({ cohorts }: Props) {
   return (
     <div style={{ width: "100%", height: "100%", position: "relative" }}>
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
-      {/* Bottom-left card: info readout + dot-size slider in one flex
-          row. flex-wrap lets the slider drop below the text on narrow
-          viewports rather than horizontally overflowing into the rest
-          of the UI; maxWidth keeps the card bounded on small screens. */}
+      {/* Bottom-left card */}
       <div
         style={{
           position: "absolute",
@@ -389,8 +349,8 @@ export default function MapView({ cohorts }: Props) {
         }}
       >
         <span className="map-info-text">
-          {dots.features.length.toLocaleString()} dots ·{" "}
-          {visibleCohorts.length} cohort
+          {dots.features.length.toLocaleString()} dots · {visibleCohorts.length}{" "}
+          cohort
           {visibleCohorts.length === 1 ? "" : "s"} · 1 dot ≈{" "}
           {DOTS_PER_UNIT.toLocaleString()} people
         </span>
@@ -413,7 +373,8 @@ export default function MapView({ cohorts }: Props) {
           </span>
         </span>
       </div>
-      {!geojson && !geojsonError && (
+      {/* Loading */}
+      {!geojson && !geojsonError && !mapRef.current?.getSource("dots") && (
         <div
           style={{
             position: "absolute",
@@ -428,9 +389,10 @@ export default function MapView({ cohorts }: Props) {
             pointerEvents: "none",
           }}
         >
-          Loading geometry…
+          Loading...
         </div>
       )}
+      {/* Error */}
       {geojsonError && (
         <div
           style={{
@@ -445,11 +407,10 @@ export default function MapView({ cohorts }: Props) {
             color: "#991b1b",
           }}
         >
-          tracts_ca.geojson failed to load: {geojsonError}
+          Map failed to load: {geojsonError}
         </div>
       )}
-      {/* Top-left stack: legend on top, chat below. Both desktop-only
-          via the .cohort-legend class hide in globals.css. */}
+      {/* Top-left stack: legend*/}
       <div
         className="cohort-legend"
         style={{
@@ -560,13 +521,6 @@ export default function MapView({ cohorts }: Props) {
               </button>
             );
           })}
-          <CustomCohorts
-            cohorts={authoredCohorts}
-            selectedIds={selectedIds}
-            onToggleSelected={toggleCohort}
-            onSave={saveAuthoredCohort}
-            onDelete={deleteAuthoredCohort}
-          />
         </div>
       </div>
     </div>
