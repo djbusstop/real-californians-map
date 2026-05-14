@@ -117,6 +117,7 @@ person_vars:
   - SSIP        # Supplemental Security Income
   - PAP         # public assistance income
   - INTP        # interest, dividend, and net rental income (wealth / passive income signal)
+  - OIP         # all other income: alimony, child support, unemployment comp, VA payments, etc. (commingled; not alimony-only)
   - POVPIP      # income-to-poverty ratio (501 max; 100 = at poverty line)
 
   # Commuting / Migration

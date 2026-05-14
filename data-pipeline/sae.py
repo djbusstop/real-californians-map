@@ -16,6 +16,7 @@ lived in pipeline.py; this module is purely a reorganization.
 from __future__ import annotations
 
 import json
+import os
 import warnings
 from typing import Any, NamedTuple
 
@@ -75,6 +76,12 @@ ACS_MOE_Z90: float = 1.645
 # (intermittent 500s) so we use the aggregated tables endpoint for
 # tract-level marginal fetching.
 ACS_API: str = "https://api.census.gov/data/2023/acs/acs5"
+
+# Census API key. The API now rejects unkeyed requests with an HTML
+# "Missing Key" page. Get a free key instantly at
+# https://api.census.gov/data/key_signup.html and set CENSUS_API_KEY
+# in the environment.
+CENSUS_API_KEY = os.environ.get("CENSUS_API_KEY")
 
 
 class TractMarginal(NamedTuple):
@@ -238,27 +245,37 @@ def fetch_acs_tract_marginal(var: str) -> TractMarginal:
     # Fetch estimate and MOE together in a single API call. This is the
     # cold-start bottleneck for cohorts whose marginals aren't already in
     # the shared marginal_cache: each new ACS variable is a ~5-15s
-    # network round-trip to the Census Detailed Tables API.
+    # network round-trip to the Census Detailed Tables API. The API key
+    # is appended when present; the API rejects unkeyed requests with
+    # an HTML "Missing Key" page.
     url = f"{ACS_API}?get=NAME,{var},{moe_var}&for=tract:*&in=state:06"
+    if CENSUS_API_KEY:
+        url += f"&key={CENSUS_API_KEY}"
     print(f"[fetch] ACS tract var {var} (with MOE {moe_var})")
     r = requests.get(url, timeout=120)
     r.raise_for_status()
 
-    # The Census API occasionally returns 200 with a non-JSON body (HTML
-    # error page, plain-text "error: variable does not exist", empty
-    # response). Treat that as the same class of "this marginal cannot
-    # be fetched" failure as the all-zeros suppression case below:
-    # return an empty TractMarginal, do not cache, and let the
-    # downstream model fall through to its share-blend fallback.
+    # The Census API can return 200 with a non-JSON body: an HTML
+    # "Missing Key" page (no/invalid CENSUS_API_KEY), an HTML error
+    # page, a plain-text "error: variable does not exist", or an empty
+    # response. The body preview below distinguishes them. Either way,
+    # treat it as "this marginal cannot be fetched": return an empty
+    # TractMarginal, do not cache, and let the downstream model fall
+    # through to its share-blend fallback.
     try:
         rows = r.json()
     except ValueError as e:
-        body_preview = r.text[:200].replace("\n", " ")
+        body_preview = r.text[:200].replace("\n", " ").strip()
+        hint = (
+            "set CENSUS_API_KEY (free key: "
+            "https://api.census.gov/data/key_signup.html)"
+            if "Missing Key" in r.text or "valid key" in r.text
+            else "possibly tract-level suppression for this variable"
+        )
         print(
             f"[warn] {var}: API returned 200 but non-JSON body "
-            f"({type(e).__name__}: {e}). Body preview: {body_preview!r}. "
-            "This usually means the variable code is not published at the "
-            "tract level for this ACS vintage. Not caching."
+            f"({type(e).__name__}: {e}) — {hint}. "
+            f"Body preview: {body_preview!r}. Not caching."
         )
         return TractMarginal(estimates={}, moes={})
 
